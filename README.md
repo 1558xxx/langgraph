@@ -3,80 +3,80 @@
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset=".github/images/logo-dark.svg">
       <source media="(prefers-color-scheme: light)" srcset=".github/images/logo-light.svg">
-      <img alt="LangGraph Logo" src=".github/images/logo-dark.svg" width="50%">
+      <img alt="LangGraph 标志" src=".github/images/logo-dark.svg" width="50%">
     </picture>
   </a>
 </div>
 
 <div align="center">
-  <h3>Low-level orchestration framework for building stateful agents.</h3>
+  <h3>用于构建有状态智能体的底层编排框架。</h3>
 </div>
 
 <div align="center">
-  <a href="https://opensource.org/licenses/MIT" target="_blank"><img src="https://img.shields.io/pypi/l/langgraph" alt="PyPI - License"></a>
-  <a href="https://pypistats.org/packages/langgraph" target="_blank"><img src="https://img.shields.io/pepy/dt/langgraph" alt="PyPI - Downloads"></a>
-  <a href="https://pypi.org/project/langgraph/" target="_blank"><img src="https://img.shields.io/pypi/v/langgraph.svg?label=%20" alt="Version"></a>
+  <a href="https://opensource.org/licenses/MIT" target="_blank"><img src="https://img.shields.io/pypi/l/langgraph" alt="PyPI - 许可证"></a>
+  <a href="https://pypistats.org/packages/langgraph" target="_blank"><img src="https://img.shields.io/pepy/dt/langgraph" alt="PyPI - 下载量"></a>
+  <a href="https://pypi.org/project/langgraph/" target="_blank"><img src="https://img.shields.io/pypi/v/langgraph.svg?label=%20" alt="版本"></a>
   <a href="https://x.com/langchain_oss" target="_blank"><img src="https://img.shields.io/twitter/url/https/twitter.com/langchain_oss.svg?style=social&label=Follow%20%40LangChain" alt="Twitter / X"></a>
 </div>
 
 <br>
 
-Trusted by companies shaping the future of agents – including Klarna, Replit, Elastic, and more – LangGraph is a low-level orchestration framework for building, managing, and deploying long-running, stateful agents.
+LangGraph 是一个用于构建、管理和部署长时间运行的有状态智能体的底层编排框架，已被 Klarna、Replit、Elastic 等推动智能体应用发展的企业采用。
 
 ```bash
 pip install -U langgraph
 ```
 
 > [!TIP]
-> If you're looking to quickly build agents, check out **[Deep Agents](https://docs.langchain.com/oss/python/deepagents/overview)** — a higher-level package built on LangGraph for agents that can plan, use subagents, and leverage file systems for complex tasks.
+> 如果你希望快速构建智能体，可以了解 **[Deep Agents](https://docs.langchain.com/oss/python/deepagents/overview)**。它是基于 LangGraph 构建的上层开发包，支持任务规划、子智能体和文件系统操作，适合处理复杂任务。
 
-For an equivalent JS/TS library, check out [LangGraph.js](https://github.com/langchain-ai/langgraphjs) and the [JS docs](https://docs.langchain.com/oss/javascript/langgraph/overview).
+如果你需要对应的 JavaScript / TypeScript 库，请参阅 [LangGraph.js](https://github.com/langchain-ai/langgraphjs) 和 [JavaScript 文档](https://docs.langchain.com/oss/javascript/langgraph/overview)。
 
-## Why use LangGraph?
+## 为什么使用 LangGraph？
 
-LangGraph provides low-level supporting infrastructure for *any* long-running, stateful workflow or agent:
+LangGraph 为各类长时间运行的有状态工作流和智能体提供底层基础设施：
 
-- **[Durable execution](https://docs.langchain.com/oss/python/langgraph/durable-execution)** — Build agents that persist through failures and can run for extended periods, automatically resuming from exactly where they left off.
-- **[Human-in-the-loop](https://docs.langchain.com/oss/python/langgraph/interrupts)** — Seamlessly incorporate human oversight by inspecting and modifying agent state at any point during execution.
-- **[Comprehensive memory](https://docs.langchain.com/oss/python/langgraph/memory)** — Create truly stateful agents with both short-term working memory for ongoing reasoning and long-term persistent memory across sessions.
-- **[Debugging with LangSmith](https://www.langchain.com/langsmith)** — Gain deep visibility into complex agent behavior with visualization tools that trace execution paths, capture state transitions, and provide detailed runtime metrics.
-- **[Production-ready deployment](https://docs.langchain.com/langsmith/deployments)** — Deploy sophisticated agent systems confidently with scalable infrastructure designed to handle the unique challenges of stateful, long-running workflows.
+- **[持久执行](https://docs.langchain.com/oss/python/langgraph/durable-execution)**：构建能够长时间运行、在故障后保留进度，并从中断位置自动恢复执行的智能体。
+- **[人工介入](https://docs.langchain.com/oss/python/langgraph/interrupts)**：支持在执行过程中检查和修改智能体状态，将人工监督融入工作流。
+- **[完整的记忆能力](https://docs.langchain.com/oss/python/langgraph/memory)**：同时支持用于当前推理过程的短期工作记忆，以及跨会话保存的长期持久记忆。
+- **[使用 LangSmith 调试](https://www.langchain.com/langsmith)**：通过可视化工具追踪执行路径、查看状态变化并获取详细的运行指标，深入理解复杂的智能体行为。
+- **[面向生产环境的部署](https://docs.langchain.com/langsmith/deployments)**：使用可扩展的基础设施部署智能体系统，应对有状态、长时间运行的工作流所带来的挑战。
 
 > [!TIP]
-> For developing, debugging, and deploying AI agents and LLM applications, see [LangSmith](https://docs.langchain.com/langsmith/home).
+> 如需开发、调试和部署 AI 智能体及大语言模型应用，请参阅 [LangSmith](https://docs.langchain.com/langsmith/home)。
 
-## LangGraph ecosystem
+## LangGraph 生态
 
-While LangGraph can be used standalone, it also integrates seamlessly with any LangChain product, giving developers a full suite of tools for building agents.
+LangGraph 可以独立使用，也能与 LangChain 旗下的其他产品配合，为开发者提供完整的智能体开发工具。
 
-To improve your LLM application development, pair LangGraph with:
+你可以将 LangGraph 与以下产品结合使用：
 
-- [Deep Agents](https://docs.langchain.com/oss/python/deepagents/overview) – Build agents that can plan, use subagents, and leverage file systems for complex tasks.
-- [LangChain](https://docs.langchain.com/oss/python/langchain/overview) – Provides integrations and composable components to streamline LLM application development.
-- [LangSmith](https://www.langchain.com/langsmith) – Helpful for agent evals and observability. Debug poor-performing LLM app runs, evaluate agent trajectories, gain visibility in production, and improve performance over time.
-- [LangSmith Deployment](https://docs.langchain.com/langsmith/deployments) – Deploy and scale agents effortlessly with a purpose-built deployment platform for long-running, stateful workflows. Discover, reuse, configure, and share agents across teams – and iterate quickly with visual prototyping in [LangSmith Studio](https://docs.langchain.com/langsmith/studio).
-
----
-
-## Documentation
-
-- [docs.langchain.com](https://docs.langchain.com/oss/python/langgraph/overview) – Comprehensive documentation, including conceptual overviews and guides
-- [reference.langchain.com/python/langgraph](https://reference.langchain.com/python/langgraph) – API reference docs for LangGraph packages
-- [LangGraph Quickstart](https://docs.langchain.com/oss/python/langgraph/quickstart) – Get started building with LangGraph
-- [Chat LangChain](https://chat.langchain.com/) – Chat with the LangChain documentation and get answers to your questions
-
-**Discussions**: Visit the [LangChain Forum](https://forum.langchain.com) to connect with the community and share all of your technical questions, ideas, and feedback.
-
-## Additional resources
-
-- **[Guides](https://docs.langchain.com/oss/python/learn)** – Quick, actionable code snippets for topics such as streaming, adding memory & persistence, and design patterns (e.g. branching, subgraphs, etc.).
-- **[LangChain Academy](https://academy.langchain.com/courses/intro-to-langgraph)** – Learn the basics of LangGraph in our free, structured course.
-- **[Case studies](https://www.langchain.com/built-with-langgraph)** – Hear how industry leaders use LangGraph to ship AI applications at scale.
-- [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview) – Learn how to contribute to LangChain projects and find good first issues.
-- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) – Our community guidelines and standards for participation.
+- [Deep Agents](https://docs.langchain.com/oss/python/deepagents/overview)：构建能够规划任务、使用子智能体并利用文件系统处理复杂任务的智能体。
+- [LangChain](https://docs.langchain.com/oss/python/langchain/overview)：提供丰富的集成和可组合组件，简化大语言模型应用开发。
+- [LangSmith](https://www.langchain.com/langsmith)：用于智能体评估与可观测性。调试表现不佳的大语言模型调用，评估智能体执行轨迹，观察生产环境行为，并持续改进性能。
+- [LangSmith Deployment](https://docs.langchain.com/langsmith/deployments)：使用专为长时间运行的有状态工作流构建的部署平台，部署和扩展智能体。在团队之间发现、复用、配置和共享智能体，并通过 [LangSmith Studio](https://docs.langchain.com/langsmith/studio) 的可视化原型工具快速迭代。
 
 ---
 
-## Acknowledgements
+## 文档
 
-LangGraph is inspired by [Pregel](https://research.google/pubs/pub37252/) and [Apache Beam](https://beam.apache.org/). The public interface draws inspiration from [NetworkX](https://networkx.org/documentation/latest/). LangGraph is built by LangChain Inc, the creators of LangChain, but can be used without LangChain.
+- [docs.langchain.com](https://docs.langchain.com/oss/python/langgraph/overview)：完整文档，包含概念介绍与使用指南。
+- [reference.langchain.com/python/langgraph](https://reference.langchain.com/python/langgraph)：LangGraph 各开发包的 API 参考文档。
+- [LangGraph 快速入门](https://docs.langchain.com/oss/python/langgraph/quickstart)：开始使用 LangGraph 构建智能体。
+- [Chat LangChain](https://chat.langchain.com/)：通过对话查询 LangChain 文档并获取问题解答。
+
+**社区讨论**：访问 [LangChain 论坛](https://forum.langchain.com)，与社区交流技术问题、想法和反馈。
+
+## 更多资源
+
+- **[开发指南](https://docs.langchain.com/oss/python/learn)**：围绕流式输出、记忆与持久化、分支和子图等主题，提供简明实用的代码示例。
+- **[LangChain Academy](https://academy.langchain.com/courses/intro-to-langgraph)**：通过免费的系统课程学习 LangGraph 基础。
+- **[应用案例](https://www.langchain.com/built-with-langgraph)**：了解行业企业如何使用 LangGraph 大规模交付 AI 应用。
+- [贡献指南](https://docs.langchain.com/oss/python/contributing/overview)：了解如何参与 LangChain 项目，并寻找适合入门的议题。
+- [行为准则](https://github.com/langchain-ai/langchain/?tab=coc-ov-file)：社区参与规范与行为标准。
+
+---
+
+## 致谢
+
+LangGraph 的设计受到 [Pregel](https://research.google/pubs/pub37252/) 和 [Apache Beam](https://beam.apache.org/) 的启发，其公共接口借鉴了 [NetworkX](https://networkx.org/documentation/latest/)。LangGraph 由 LangChain 的开发团队 LangChain Inc 构建，但也可以在不使用 LangChain 的情况下独立使用。
