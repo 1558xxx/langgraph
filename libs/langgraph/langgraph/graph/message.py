@@ -67,31 +67,23 @@ def add_messages(
     *,
     format: Literal["langchain-openai"] | None = None,
 ) -> Messages:
-    """Merges two lists of messages, updating existing messages by ID.
+    """合并两组消息，并按 ID 更新已有消息。
 
-    By default, this ensures the state is "append-only", unless the
-    new message has the same ID as an existing message.
+    默认只追加消息；新消息与已有消息 ID 相同时会替换已有消息。
 
     Args:
-        left: The base list of `Messages`.
-        right: The list of `Messages` (or single `Message`) to merge
-            into the base list.
-        format: The format to return messages in. If `None` then `Messages` will be
-            returned as is. If `langchain-openai` then `Messages` will be returned as
-            `BaseMessage` objects with their contents formatted to match OpenAI message
-            format, meaning contents can be string, `'text'` blocks, or `'image_url'` blocks
-            and tool responses are returned as their own `ToolMessage` objects.
+        left: 基础 `Messages` 列表。
+        right: 待合并的 `Messages` 列表或单个 `Message`。
+        format: 返回消息的格式。为 `None` 时原样返回；为 `langchain-openai` 时，返回内容符合 OpenAI 消息格式的 `BaseMessage`，内容可为字符串、`'text'` 块或 `'image_url'` 块，工具响应独立表示为 `ToolMessage`。
 
-            !!! important "Requirement"
+            !!! important "依赖要求"
 
-                Must have `langchain-core>=0.3.11` installed to use this feature.
+                此功能需要安装 `langchain-core>=0.3.11`。
 
     Returns:
-        A new list of messages with the messages from `right` merged into `left`.
-        If a message in `right` has the same ID as a message in `left`, the
-            message from `right` will replace the message from `left`.
+        将 `right` 合入 `left` 后的新列表；相同 ID 使用 `right` 中的消息替换。下方依次展示基本用法、覆盖消息、在状态图中使用及 OpenAI 消息格式。
 
-    Example: Basic usage
+    Examples:
         ```python
         from langchain_core.messages import AIMessage, HumanMessage
 
@@ -101,7 +93,6 @@ def add_messages(
         # [HumanMessage(content='Hello', id='1'), AIMessage(content='Hi there!', id='2')]
         ```
 
-    Example: Overwrite existing message
         ```python
         msgs1 = [HumanMessage(content="Hello", id="1")]
         msgs2 = [HumanMessage(content="Hello again", id="1")]
@@ -109,7 +100,6 @@ def add_messages(
         # [HumanMessage(content='Hello again', id='1')]
         ```
 
-    Example: Use in a StateGraph
         ```python
         from typing import Annotated
         from typing_extensions import TypedDict
@@ -129,7 +119,6 @@ def add_messages(
         # {'messages': [AIMessage(content='Hello', id=...)]}
         ```
 
-    Example: Use OpenAI message format
         ```python
         from typing import Annotated
         from typing_extensions import TypedDict
@@ -185,18 +174,17 @@ def add_messages(
         #     ]
         # }
         ```
-
     """
     remove_all_idx = None
-    # coerce to list
+    # 统一转换为列表。
     if not isinstance(left, list):
         left = [left]  # type: ignore[assignment]
     if not isinstance(right, list):
         right = [right]  # type: ignore[assignment]
-    # coerce to message
+    # 统一转换为消息对象。
     left = _coerce_to_messages(left)
     right = _coerce_to_messages(right)
-    # assign missing ids
+    # 为缺少 ID 的消息分配 ID。
     for m in left:
         if m.id is None:
             m.id = str(uuid.uuid4())
@@ -209,7 +197,7 @@ def add_messages(
     if remove_all_idx is not None:
         return right[remove_all_idx + 1 :]
 
-    # merge
+    # 合并消息。
     merged = left.copy()
     merged_by_id = {m.id: i for i, m in enumerate(merged)}
     ids_to_remove = set()
@@ -243,8 +231,8 @@ def add_messages(
 
 
 def _coerce_to_messages(messages: list) -> list[Any]:
-    # Both conversions return a plain message unchanged, and a long history is
-    # all plain messages, so check the few distinct types instead of each item.
+    # 两种转换都会原样返回普通消息，长历史通常全部由普通消息构成；
+    # 因此检查少量不同的消息类型即可，无需逐条检查。
     if all(
         issubclass(t, BaseMessage) and not issubclass(t, BaseMessageChunk)
         for t in set(map(type, messages))
@@ -261,12 +249,9 @@ def _coerce_to_messages(messages: list) -> list[Any]:
     category=None,
 )
 class MessageGraph(StateGraph):
-    """A StateGraph where every node receives a list of messages as input and returns one or more messages as output.
+    """每个节点接收消息列表，并输出一条或多条消息的 `StateGraph`。
 
-    MessageGraph is a subclass of StateGraph whose entire state is a single, append-only* list of messages.
-    Each node in a MessageGraph takes a list of messages as input and returns zero or more
-    messages as output. The `add_messages` function is used to merge the output messages from each node
-    into the existing list of messages in the graph's state.
+    `MessageGraph` 的整个状态是一个默认只追加的消息列表。每个节点接收该列表，返回零条或多条消息；`add_messages` 将节点输出合并进图状态中的已有消息列表，相同 ID 的消息可被替换。
 
     Examples:
         ```pycon
@@ -341,9 +326,9 @@ def push_message(
     *,
     state_key: str | None = "messages",
 ) -> AnyMessage:
-    """Write a message manually to the `messages` / `messages-tuple` stream mode.
+    """手动向 `messages` / `messages-tuple` 流模式写入消息。
 
-    Will automatically write to the channel specified in the `state_key` unless `state_key` is `None`.
+    除非 `state_key` 为 `None`，否则还会自动写入该参数指定的状态通道。
     """
 
     from langchain_core.callbacks.base import (

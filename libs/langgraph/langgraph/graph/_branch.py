@@ -44,7 +44,7 @@ def _get_branch_path_input_schema(
     | Runnable[Any, Hashable | Sequence[Hashable]],
 ) -> type[Any] | None:
     input = None
-    # detect input schema annotation in the branch callable
+    # 从分支可调用对象的注解中检测输入结构。
     try:
         callable_: (
             Callable[..., Hashable | Sequence[Hashable]]
@@ -92,7 +92,7 @@ class BranchSpec(NamedTuple):
         path_map: dict[Hashable, str] | list[str] | None,
         infer_schema: bool = False,
     ) -> BranchSpec:
-        # coerce path_map to a dictionary
+        # 将 path_map 统一转换为字典。
         path_map_: dict[Hashable, str] | None = None
         try:
             if isinstance(path_map, dict):
@@ -100,23 +100,23 @@ class BranchSpec(NamedTuple):
             elif isinstance(path_map, list):
                 path_map_ = {name: name for name in path_map}
             else:
-                # find func
+                # 查找函数。
                 func: Callable | None = None
                 if isinstance(path, (RunnableCallable, RunnableLambda)):
                     func = path.func or path.afunc
                 if func is not None:
-                    # find callable method
+                    # 查找 __call__ 方法。
                     if (cal := getattr(path, "__call__", None)) and ismethod(cal):
                         func = cal
-                    # get the return type
+                    # 读取返回类型。
                     if rtn_type := get_type_hints(func).get("return"):
                         if get_origin(rtn_type) is Literal:
                             path_map_ = {name: name for name in get_args(rtn_type)}
         except Exception:
             pass
-        # infer input schema
+        # 推断输入结构。
         input_schema = _get_branch_path_input_schema(path) if infer_schema else None
-        # create branch
+        # 创建分支。
         return cls(path=path, ends=path_map_, input_schema=input_schema)
 
     def run(
@@ -153,8 +153,8 @@ class BranchSpec(NamedTuple):
     ) -> Runnable:
         if reader:
             value = reader(config)
-            # passthrough additional keys from node to branch
-            # only doable when using dict states
+            # 将节点提供的额外键透传给分支。
+            # 仅字典状态支持这种透传。
             if (
                 isinstance(value, dict)
                 and isinstance(input, dict)
@@ -176,8 +176,8 @@ class BranchSpec(NamedTuple):
     ) -> Runnable:
         if reader:
             value = reader(config)
-            # passthrough additional keys from node to branch
-            # only doable when using dict states
+            # 将节点提供的额外键透传给分支。
+            # 仅字典状态支持这种透传。
             if (
                 isinstance(value, dict)
                 and isinstance(input, dict)

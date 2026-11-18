@@ -54,21 +54,17 @@ def empty_checkpoint() -> Checkpoint:
 
 
 def put_writes_accepts_task_path(put_writes: Callable[..., Any]) -> bool:
-    """Whether a saver's `put_writes` or `aput_writes` takes `task_path`.
+    """存储器的 `put_writes` 或 `aput_writes` 是否接受 `task_path`。
 
-    Savers written before the parameter existed don't, so it is passed only
-    when this is true.
+    较早的实现没有此参数，因此仅在支持时传入。
     """
     return signature(put_writes).parameters.get("task_path") is not None
 
 
 def exit_delta_task_id(step: int, task_id: str) -> str:
-    """Synthetic task id for exit-mode DeltaChannel writes.
+    """退出持久化模式下，增量通道写入使用的合成任务 ID。
 
-    Embeds the superstep in the first UUID group so `ORDER BY task_id, idx`
-    preserves chronological order while remaining a valid RFC UUID (required by
-    Postgres `checkpoint_writes.task_id uuid` columns). Never `NULL_TASK_ID`:
-    readers apply writes under it as the anchor checkpoint's own pending writes.
+    将超步编号编码到 UUID 第一组，使 `ORDER BY task_id, idx` 保持时间顺序，同时符合 RFC UUID 格式，满足 Postgres `checkpoint_writes.task_id uuid` 列要求。不能使用 `NULL_TASK_ID`，因为读取器会将该 ID 下的写入当作锚点检查点自身的待处理写入。
     """
     parts = str(uuid.UUID(task_id)).split("-")
     synthetic = f"{step:08d}-{parts[1]}-{parts[2]}-{parts[3]}-{parts[4]}"
@@ -78,10 +74,9 @@ def exit_delta_task_id(step: int, task_id: str) -> str:
 
 
 def exit_delta_late_task_id(step: int, task_id: str) -> str:
-    """Synthetic task id for exit-mode writes of a superstep after the anchor's own.
+    """退出模式下，锚点自身超步之后各超步写入的合成任务 ID。
 
-    Sorts after every real task id, in step order, so replay keeps them after
-    the anchor's own superstep whether a saver orders by task path or task id.
+    按超步顺序排在所有真实任务 ID 之后；无论存储器按任务路径还是 ID 排序，重放时这些写入都位于锚点自身超步之后。
     """
     parts = str(uuid.UUID(task_id)).split("-")
     return f"ffffffff-{step >> 16:04x}-{step & 0xFFFF:04x}-{parts[3]}-{parts[4]}"
@@ -92,13 +87,9 @@ def delta_channels_to_snapshot(
     counters_since_delta_snapshot: Mapping[str, tuple[int, int]],
     channel_versions: ChannelVersions,
 ) -> set[str]:
-    """Return the set of DeltaChannel names that should snapshot now.
+    """返回当前应生成快照的增量通道名集合。
 
-    A channel snapshots when EITHER its accumulated update count reaches
-    `snapshot_frequency` OR the total supersteps since its last snapshot
-    reaches `DELTA_MAX_SUPERSTEPS_SINCE_SNAPSHOT`. A channel without a version
-    was never written on this branch, so it has nothing to snapshot. This is a
-    pure predicate — no mutation.
+    累计更新次数达到 `snapshot_frequency`，或距上次快照的总超步数达到 `DELTA_MAX_SUPERSTEPS_SINCE_SNAPSHOT` 时生成快照。没有版本的通道从未在此分支上被写入，无需快照。此函数只判断条件，不修改状态。
     """
     result: set[str] = set()
     for name, ch in channels.items():
@@ -120,7 +111,7 @@ def delta_channels_to_snapshot(
 def get_updated_channels_from_tasks(
     run_tasks: Iterable[Any],
 ) -> set[str]:
-    """Channel names written by an update_state superstep (excluding PUSH)."""
+    """返回 update_state 超步写入的通道名，不包含 PUSH。"""
     return {c for task in run_tasks for c, _ in task.writes if c != PUSH}
 
 
@@ -128,8 +119,10 @@ def get_delta_channels_from_all_channels(
     channels: Mapping[str, BaseChannel],
     channel_versions: ChannelVersions,
 ) -> set[str]:
-    """DeltaChannels to snapshot on the first update_state of a fresh thread:
-    the ones it wrote, as the rest have no version and nothing to store."""
+    """新线程首次 update_state 时需要快照的增量通道。
+
+    仅包含本次写入的通道；其余通道没有版本，也没有值需要保存。
+    """
     return {
         k
         for k, ch in channels.items()
@@ -141,11 +134,9 @@ def delta_channels_with_pending_writes(
     specs: Mapping[str, Any],
     pending_writes: Iterable[PendingWrite] | None,
 ) -> set[str]:
-    """DeltaChannels a branch starting from this checkpoint must snapshot.
+    """返回从此检查点启动的新分支必须快照的增量通道。
 
-    A checkpoint's pending writes belong to the child that consumed them, and
-    nothing records which child that was. A new branch snapshots every delta
-    channel they touch, so its ancestor walk never replays them.
+    检查点的待处理写入属于消费它们的子检查点，但未记录具体子检查点。新分支需快照这些写入涉及的全部增量通道，避免祖先回溯时再次重放。
     """
     return {
         ch
@@ -157,12 +148,9 @@ def delta_channels_with_pending_writes(
 def delta_channels_overwritten(
     specs: Mapping[str, Any], writes: Iterable[tuple[str, Any]]
 ) -> set[str]:
-    """Return the names of the DeltaChannels that `writes` set with an `Overwrite`.
+    """返回 `writes` 中由 `Overwrite` 设置的增量通道名。
 
-    `update_state` saves a full snapshot of these channels in the checkpoint it
-    creates, like the loop does when a node returns an `Overwrite`. Otherwise,
-    reading the channel later starts from an older snapshot and replays the
-    writes the `Overwrite` threw away.
+    `update_state` 会在新检查点保存这些通道的完整快照，与节点返回 `Overwrite` 时的循环行为一致。否则以后读取会从较旧快照开始，重放本应被 `Overwrite` 丢弃的写入。
     """
     return {
         ch
@@ -174,11 +162,9 @@ def delta_channels_overwritten(
 def checkpoint_superseded(
     saver: BaseCheckpointSaver, config: RunnableConfig, saved: CheckpointTuple
 ) -> bool:
-    """Whether the thread has moved past `saved`, the checkpoint `config` addressed.
+    """判断线程是否已越过 `saved`，即 `config` 指定的检查点。
 
-    A checkpoint with a child is never the latest put, so this misses none. A
-    leaf of an abandoned branch counts as well; telling it apart would mean
-    listing the thread to look for children, which the saver can't do cheaply.
+    有子检查点的检查点必然不是最近保存项，因此不会漏判。已废弃分支的叶检查点也算作已被越过；区分这种情况需要列出线程并查找子节点，存储器难以低成本完成。
     """
     if not config[CONF].get(CONFIG_KEY_CHECKPOINT_ID):
         return False
@@ -191,7 +177,7 @@ def checkpoint_superseded(
 async def acheckpoint_superseded(
     saver: BaseCheckpointSaver, config: RunnableConfig, saved: CheckpointTuple
 ) -> bool:
-    """Async `checkpoint_superseded`."""
+    """`checkpoint_superseded` 的异步版本。"""
     if not config[CONF].get(CONFIG_KEY_CHECKPOINT_ID):
         return False
     latest = await saver.aget_tuple(
@@ -206,9 +192,9 @@ def create_metadata_for_update_state_api(
     *,
     prev_metadata: Mapping[str, Any] | None,
 ) -> dict[str, tuple[int, int]]:
-    """Advance ``counters_since_delta_snapshot`` for update_state on a non-fresh thread.
+    """为非新线程的 update_state 推进 `counters_since_delta_snapshot`。
 
-    Mirrors the per-superstep counter bump in ``_loop._put_checkpoint``.
+    与 `_loop._put_checkpoint` 中每个超步推进计数的方式一致。
     """
     prev_counters = dict(
         (prev_metadata or {}).get("counters_since_delta_snapshot") or {}
@@ -237,7 +223,7 @@ def create_checkpoint_plan_for_update_state_api(
     fork_channels: set[str],
     channel_versions: ChannelVersions,
 ) -> tuple[set[str], dict[str, Any]]:
-    """Return ``(channels_to_snapshot, metadata)`` for an update_state head."""
+    """返回 update_state 头检查点所需的 `(channels_to_snapshot, metadata)`。"""
     metadata: dict[str, Any] = {
         "source": source,
         "step": step,
@@ -277,18 +263,11 @@ def create_checkpoint(
     stored_versions: ChannelVersions | None = None,
     trigger_to_nodes: Mapping[str, Sequence[str]] | None = None,
 ) -> Checkpoint:
-    """Build a new Checkpoint from the previous one and live channel state.
+    """根据前一检查点和当前通道状态构建新检查点。
 
-    For each name in `channels_to_snapshot`, a `_DeltaSnapshot(value)` blob
-    is written into `channel_values[k]`. Other delta channels are omitted
-    from `channel_values` — the ancestor walk reconstructs their state
-    from `checkpoint_writes`. Callers compute the set via
-    `delta_channels_to_snapshot(channels, counters)`; defaults to empty
-    (no snapshots) when not provided.
+    对 `channels_to_snapshot` 中每个通道，在 `channel_values[k]` 写入 `_DeltaSnapshot(value)`。其他增量通道不写入 `channel_values`，其状态由祖先回溯从 `checkpoint_writes` 重建。调用方通过 `delta_channels_to_snapshot(channels, counters)` 计算集合；未提供时默认为空，即不生成快照。
 
-    `stored_versions` are the channel versions of the last checkpoint the
-    saver stored. A snapshotted channel whose version has not moved since
-    then is bumped.
+    `stored_versions` 为存储器上次保存的通道版本。某个通道需要快照但版本尚未改变时，须提升版本以确保快照写入。
     """
     ts = datetime.now(timezone.utc).isoformat()
     channels_to_snapshot = channels_to_snapshot or set()
@@ -302,19 +281,19 @@ def create_checkpoint(
         for k in channels:
             ch = channels[k]
             if k not in channel_versions:
-                # A forced snapshot of a never-written channel still has to
-                # land to stop the ancestor walk, and `put` only stores blobs
-                # for versioned channels.
+                # 即使通道从未被写入，强制快照也必须落盘，
+                # 才能终止祖先回溯；而 put 只会保存
+                # 已经具有版本的通道快照。
                 if k in channels_to_snapshot and get_next_version is not None:
                     channel_versions[k] = get_next_version(None, None)
                     bumped[k] = (None, channel_versions[k])
                     values[k] = _DeltaSnapshot(ch.get())
                 continue
             if k in channels_to_snapshot:
-                # `put` only stores a blob for a channel whose version moved,
-                # so snapshotting a channel this step did not write needs a
-                # bump: exit mode reaching the cadence on a superstep that
-                # skipped the channel, and a fork's first checkpoint.
+                # put 仅为版本变化的通道保存快照，因此
+                # 本超步未写入的通道若需要快照，也必须提升版本：
+                # 例如退出模式在跳过该通道的超步达到快照阈值，
+                # 或分叉分支的第一个检查点。
                 if (
                     get_next_version is not None
                     and stored_versions is not None
@@ -346,15 +325,9 @@ def _mark_bumps_seen(
     bumped: Mapping[str, tuple[Any, Any]],
     trigger_to_nodes: Mapping[str, Sequence[str]],
 ) -> dict[str, ChannelVersions]:
-    """Advance whoever had seen a bumped channel's old version to the new one.
+    """将已观察到通道旧版本的节点同步推进至新版本。
 
-    A bump that only stores a snapshot is not a write. Left unseen, it would
-    re-fire `interrupt_before` and rerun the channel's subscribers. A channel
-    bumped from no version was never written, so it also goes to the
-    subscribers that never ran: they have no entry, and would start on the bump.
-    For each entry it advances, `SNAPSHOT_BUMPS` keeps the new version and the
-    one the node really read, so `versions_seen_without_bumps` can put the read
-    back.
+    仅为保存快照而提升版本不属于真正写入；若不推进已读版本，会再次触发 `interrupt_before` 并重跑订阅者。从无版本提升的通道从未被写入，还需处理从未运行的订阅者，否则它们会因版本提升而启动。对于被推进的每个条目，`SNAPSHOT_BUMPS` 保存新版本和节点真正读取的版本，供 `versions_seen_without_bumps` 恢复。
     """
     if not bumped:
         return versions_seen
@@ -371,7 +344,7 @@ def _mark_bumps_seen(
             if seen.get(k) != old:
                 continue
             advanced, read = _bump_keys(node, k)
-            # If an earlier bump set `old`, the real read is already recorded.
+            # 若之前的版本提升已经设置 old，则真实读取版本已有记录。
             if old is not None and marks.get(advanced) != old:
                 marks[read] = old
             marks[advanced] = new
@@ -382,15 +355,17 @@ def _mark_bumps_seen(
 
 
 def _bump_keys(node: str, channel: str) -> tuple[str, str]:
-    # Node names can't contain either separator, so the keys can't collide.
+    # 节点名不能包含这两种分隔符，因此键不会冲突。
     return f"{node}{NS_SEP}{channel}", f"{node}{NS_END}{channel}"
 
 
 def versions_seen_without_bumps(
     versions_seen: dict[str, ChannelVersions],
 ) -> dict[str, ChannelVersions]:
-    """`versions_seen` as the nodes read it: an entry a bump advanced goes back
-    to the version the node really read, or away if it never read one."""
+    """恢复节点实际读取时的 `versions_seen`。
+
+    被快照版本提升推进的条目恢复为真实读取版本；若从未读取过，则移除该条目。
+    """
     if not (marks := versions_seen.get(SNAPSHOT_BUMPS)):
         return versions_seen
     out: dict[str, ChannelVersions] = {}
@@ -410,17 +385,11 @@ def versions_seen_without_bumps(
 def _delta_channels_to_replay(
     specs: Mapping[str, BaseChannel], checkpoint: Checkpoint
 ) -> list[str]:
-    """Channels whose value at `checkpoint` the ancestor walk rebuilds.
+    """返回需要通过祖先回溯重建检查点值的通道。
 
-    A `_DeltaSnapshot` blob or a plain value (migration) resolves directly via
-    `from_checkpoint`, so only a channel with nothing stored here needs the
-    walk. A channel with no version was never written, so it is empty without
-    one; a walk for it would find no snapshot to stop at and read every
-    ancestor, every time the thread is loaded.
+    `_DeltaSnapshot` 或迁移前的普通值可通过 `from_checkpoint` 直接恢复，只有此处没有存储值的通道需要回溯。没有版本意味着从未写入，其状态直接为空；若仍回溯，就无法找到快照终点，导致每次加载都遍历全部祖先。
 
-    A `BinaryOperatorAggregate` stores its value at every version, so one with
-    nothing stored was written as a `DeltaChannel` before its annotation
-    changed, and is rebuilt the same way.
+    `BinaryOperatorAggregate` 会在每个版本保存值，因此其缺值意味着注解变更前曾是 `DeltaChannel`，也应按增量方式重建。
     """
     return [
         k
@@ -436,8 +405,8 @@ def _replay(spec: BaseChannel, history: DeltaChannelHistory) -> BaseChannel:
     if isinstance(ch, DeltaChannel):
         ch.replay_writes(history["writes"])
     else:
-        # One update per write: the writes span many supersteps, and a single
-        # call would reject a second Overwrite and drop the writes after one.
+        # 每条写入单独更新一次：这些写入跨越多个超步，若一次性更新，
+        # 会拒绝第二个 Overwrite，并丢弃第一个 Overwrite 之后的写入。
         for _, _, value in history["writes"]:
             ch.update([value])
     return ch
@@ -462,15 +431,9 @@ def channels_from_checkpoint(
     saver: BaseCheckpointSaver | None = None,
     config: RunnableConfig | None = None,
 ) -> tuple[Mapping[str, BaseChannel], ManagedValueMapping]:
-    """Hydrate channels from a checkpoint.
+    """从检查点恢复通道。
 
-    For most channels, `spec.from_checkpoint(checkpoint["channel_values"][k])`
-    is sufficient. `DeltaChannel` is the exception: when the channel is
-    absent from `channel_values`, an ancestor walk via
-    `saver.get_delta_channel_history` is required to find the nearest seed
-    (`_DeltaSnapshot` blob or pre-migration plain value) and accumulate
-    the writes between it and the target. All delta channels needing
-    replay are batched into a single saver call.
+    大多数通道通过 `spec.from_checkpoint(checkpoint["channel_values"][k])` 即可恢复。`DeltaChannel` 若不在 `channel_values` 中，则必须调用 `saver.get_delta_channel_history` 回溯祖先，找到最近初始值（`_DeltaSnapshot` 或迁移前的普通值），并收集它与目标检查点之间的写入。所有需要重放的增量通道合并为一次存储器调用。
     """
     channel_specs: dict[str, BaseChannel] = {}
     managed_specs: dict[str, ManagedValueSpec] = {}
@@ -506,7 +469,7 @@ async def achannels_from_checkpoint(
     saver: BaseCheckpointSaver | None = None,
     config: RunnableConfig | None = None,
 ) -> tuple[Mapping[str, BaseChannel], ManagedValueMapping]:
-    """Async version of `channels_from_checkpoint`. See docstring there."""
+    """`channels_from_checkpoint` 的异步版本，说明见该方法。"""
     channel_specs: dict[str, BaseChannel] = {}
     managed_specs: dict[str, ManagedValueSpec] = {}
     for k, v in specs.items():

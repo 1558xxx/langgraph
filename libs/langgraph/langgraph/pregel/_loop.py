@@ -164,8 +164,8 @@ def DuplexStream(*streams: StreamProtocol) -> StreamProtocol:
 
 
 def _cacheable(writes: WritesT) -> bool:
-    # A cache hit skips the node, so a cached error would skip it without
-    # raising: only a node that finished goes to the cache.
+    # 命中缓存会跳过节点；若缓存错误，就会跳过节点且不再抛出异常，
+    # 因此只缓存成功完成的节点。
     return not any(c in (INTERRUPT, ERROR) for c, _ in writes)
 
 
@@ -213,75 +213,75 @@ class PregelLoop:
     _migrate_checkpoint: Callable[[Checkpoint], None] | None
     submit: Submit
     channels: Mapping[str, BaseChannel]
-    # Futures from `checkpointer.put_writes` calls that produced delta-channel
-    # writes. `_put_checkpoint` hands this list to the save it submits, which
-    # waits for them first, so a checkpoint never becomes durable before the
-    # writes that produced it. If a write or the previous save failed, the
-    # save fails too: a DeltaChannel is rebuilt from its writes along the
-    # parent chain, so a checkpoint saved past either gap reads back short
-    # for good. Initialised to `[]` in both sync and async `__enter__`;
-    # stays `None` only when no checkpointer.
+    # 保存产生增量通道写入的 checkpointer.put_writes 调用所返回的 Future。
+    # _put_checkpoint 将此列表交给提交的保存任务，
+    # 保存任务先等待这些写入完成，确保检查点不会早于
+    # 产生它的写入持久化。若写入或前一次保存失败，
+    # 本次保存也必须失败：DeltaChannel 依赖父链上的写入重建，
+    # 若跨过缺口保存检查点，后续读取会永久缺失数据。
+    # 同步和异步 __enter__ 都会将其初始化为 []；
+    # 只有未配置检查点存储器时才保持为 None。
     _delta_write_futs: list[Any] | None = None
 
-    # Same pattern as `_delta_write_futs` but for error-handler writes.
-    # When `put_writes` persists an ERROR_SOURCE_NODE marker, the future is
-    # appended here.  `schedule_error_handler` / `aschedule_error_handler`
-    # drain this list so the write is durable before the handler starts.
+    # 与 _delta_write_futs 相同，但用于错误处理器相关写入。
+    # put_writes 持久化 ERROR_SOURCE_NODE 标记时，
+    # 将其 Future 加入此列表；schedule_error_handler / aschedule_error_handler
+    # 会等待列表中的任务，确保启动处理器前写入已持久化。
     _error_handler_write_futs: list[Any] | None = None
 
-    # Exit-mode accumulator: every delta-channel write produced during this
-    # run (input writes from `_first` + per-superstep writes captured in
-    # `after_tick`). At exit, `_put_exit_delta_writes` filters out channels
-    # that will snapshot, then persists the rest under an anchor parent.
-    # `None` when not in exit mode (so the capture sites are no-ops).
-    # Each tuple is `(step, task_id, task_path, channel, value)`; see
-    # `_put_exit_delta_writes` for how they are ordered.
+    # 退出模式的累积器：收集本次运行产生的全部增量通道写入，
+    # 包括 _first 中的输入写入，以及
+    # after_tick 捕获的各超步写入。退出时，_put_exit_delta_writes
+    # 排除即将生成快照的通道，再将其余写入保存在锚点父检查点下。
+    # 非退出模式时为 None，因此各捕获位置不执行操作。
+    # 每项为 (step, task_id, task_path, channel, value)；
+    # 排序方式见 _put_exit_delta_writes。
     _exit_delta_writes: list[tuple[int, str, str, str, Any]] | None = None
 
-    # The (task_id, channel) pairs whose delta writes are stored on the loaded
-    # checkpoint, which a resume addressed by `checkpoint_id` can rerun; this
-    # run's `Command` delta writes, kept apart from the NULL_TASK_ID writes
-    # loaded with the checkpoint; and the checkpoint's own superstep, the
-    # first one this run ticks.
+    # 记录已加载检查点中保存了增量写入的 (task_id, channel) 对，
+    # 通过 checkpoint_id 恢复时可能重跑这些任务；同时记录
+    # 本次运行的 Command 增量写入，与从检查点加载的 NULL_TASK_ID 写入分开；
+    # 还记录检查点自身的超步编号，
+    # 也就是本次运行执行的第一个超步。
     _stored_delta_writes: set[tuple[str, str]]
     _exit_command_writes: list[tuple[str, Any]]
     _exit_first_step: int | None = None
 
-    # Delta channels that must snapshot at the next checkpoint, whatever their
-    # cadence counters say:
-    # * an Overwrite arrived since the last checkpoint, so sparse replay has to
-    #   start from the post-overwrite value;
-    # * the checkpoint this run starts from has pending writes to them; see
-    #   `delta_channels_with_pending_writes`.
+    # 无论快照周期计数如何，下一检查点都必须快照的增量通道：
+    # 包括以下两种情况：
+    # * 上次检查点之后发生 Overwrite，稀疏重放必须
+    #   从覆盖后的值开始；
+    # * 本次运行的起始检查点包含这些通道的待处理写入，参见
+    #   delta_channels_with_pending_writes。
     _delta_channels_forced_snapshot: set[str]
-    # Set by `_first` for a resume: the writes it loaded with the checkpoint,
-    # which `after_tick` checks against the ones reapply handed back.
+    # 恢复时由 _first 设置，保存从检查点加载的写入；
+    # after_tick 将其与重新分配回任务的写入进行比较。
     _resume_loaded_writes: Sequence[PendingWrite] = ()
-    # Tasks `_reapply_writes_to_succeeded_nodes` handed loaded writes back to.
+    # _reapply_writes_to_succeeded_nodes 将已加载写入归还给的任务。
     _reapplied_task_ids: set[str]
-    # Tasks that wrote during this run, the only ones exit mode saves at exit.
+    # 本次运行实际产生写入的任务；退出模式只在退出时保存这些任务。
     _written_task_ids: set[str]
-    # A checkpoint addressed by `checkpoint_id` that the thread has moved past,
-    # so it may already have children.
+    # 由 checkpoint_id 指定且线程已经越过的检查点，
+    # 因此它可能已经有子检查点。
     _addressed_checkpoint_superseded: bool = False
 
-    # The checkpoint_config that points at the parent loaded at `__enter__`
-    # (or the synthetic-empty checkpoint, on first run). We capture it
-    # eagerly because every `_put_checkpoint` advances `self.checkpoint_config`
-    # to the newly-saved checkpoint's id — by exit time the original parent
-    # config would otherwise be lost. `_put_exit_delta_writes` uses this:
-    # on resumed runs as the anchor for exit delta writes; on first runs
-    # to derive the lazy stub's config (its `checkpoint_id` is the
-    # synthetic-empty id we want the stub persisted under).
+    # 指向 __enter__ 加载的父检查点的 checkpoint_config，
+    # 首次运行时则指向合成的空检查点。这里提前保存，
+    # 因为每次 _put_checkpoint 都会将 self.checkpoint_config
+    # 推进到新保存检查点的 ID，否则退出时就会丢失
+    # 最初的父配置。_put_exit_delta_writes 在恢复运行时
+    # 将其用作退出增量写入的锚点；首次运行时，
+    # 用其派生按需创建的占位检查点配置，
+    # 其中的 checkpoint_id 正是占位检查点需要使用的合成空 ID。
     _initial_checkpoint_config: RunnableConfig
 
-    # True iff the saver actually returned a tuple at `__enter__`. False
-    # on the first-ever run for a thread (no parent persisted yet).
-    # `_put_exit_delta_writes` uses this to decide between anchoring on
-    # the existing parent (True) or creating a lazy stub (False).
+    # 仅当 __enter__ 确实从存储器获取到元组时为 True；
+    # 线程首次运行且尚无持久化父检查点时为 False。
+    # _put_exit_delta_writes 据此决定使用
+    # 现有父检查点作锚点（True），还是按需创建占位检查点（False）。
     _has_persisted_parent: bool = False
-    # True iff `__enter__` loaded the thread's latest checkpoint, not one a
-    # `checkpoint_id` addressed, so nothing has been built on it yet.
+    # 仅当 __enter__ 加载线程最新检查点而非 checkpoint_id 指定项时为 True，
+    # 此时尚未在该检查点上构建后继。
     _loaded_latest: bool = False
 
     managed: ManagedValueMapping
@@ -310,7 +310,7 @@ class PregelLoop:
     _graph_lifecycle_events: deque[GraphLifecycleEvent]
     _has_graph_lifecycle_callbacks: bool
 
-    # public
+    # 公开接口。
 
     def __init__(
         self,
@@ -358,8 +358,8 @@ class PregelLoop:
         self.retry_policy = retry_policy
         self.cache_policy = cache_policy
         self.durability = durability
-        # Channel types are fixed for the run, so per-step code reads these
-        # instead of scanning every channel.
+        # 通道类型在一次运行中固定，因此各超步读取这些集合，
+        # 无需反复扫描所有通道。
         self._has_untracked_channels = any(
             isinstance(spec, UntrackedValue) for spec in specs.values()
         )
@@ -372,8 +372,8 @@ class PregelLoop:
             self.stream = DuplexStream(self.stream, config[CONF][CONFIG_KEY_STREAM])
         scratchpad: PregelScratchpad | None = config[CONF].get(CONFIG_KEY_SCRATCHPAD)
         if isinstance(scratchpad, PregelScratchpad):
-            # if count is > 0, append to checkpoint_ns
-            # if count is 0, leave as is
+            # 计数大于 0 时，追加到 checkpoint_ns。
+            # 计数为 0 时，保持原样。
             if cnt := scratchpad.subgraph_counter():
                 self.config = patch_configurable(
                     self.config,
@@ -418,10 +418,10 @@ class PregelLoop:
             else ()
         )
         self.prev_checkpoint_config = None
-        # Whether the run points this loop at a checkpoint: a truthy
-        # `checkpoint_id`, this graph's `checkpoint_map` entry, or a replaying
-        # parent. Every task config carries `checkpoint_id: None`, so a key
-        # check would count every subgraph.
+        # 判断本次运行是否将循环指向特定检查点：包括非空
+        # checkpoint_id、本图在 checkpoint_map 中的条目，或正在重放的
+        # 父图。每个任务配置都含 checkpoint_id: None，因此不能仅检查键存在，
+        # 否则会把所有子图都算进去。
         self._addressed = bool(
             self.checkpoint_config[CONF].get(CONFIG_KEY_CHECKPOINT_ID)
             or self.config[CONF].get(CONFIG_KEY_REPLAY_STATE)
@@ -435,8 +435,8 @@ class PregelLoop:
         *,
         interrupts: tuple[Interrupt, ...] = (),
     ) -> None:
-        # drain status never reaches lifecycle events: tick() returns False
-        # before pushing, and interrupts are raised through GraphInterrupt
+        # 排空状态不会进入生命周期事件：tick() 在推送前返回 False，
+        # 而中断通过 GraphInterrupt 抛出。
         if self.status == "draining":
             raise RuntimeError("Draining status cannot emit lifecycle events")
         status = self.status
@@ -471,54 +471,54 @@ class PregelLoop:
     def put_writes(
         self, task_id: str, writes: WritesT, *, cached: bool = False
     ) -> None:
-        """Put writes for a task, to be read by the next tick."""
+        """记录任务写入，供下一次 tick 读取。"""
         if not writes:
             return
         self._written_task_ids.add(task_id)
-        # deduplicate writes to special channels, last write wins
+        # 对特殊通道的写入去重，保留最后一次写入。
         if all(w[0] in WRITES_IDX_MAP for w in writes):
             writes = list({w[0]: w for w in writes}.values())
-        # Before the writes are saved, kept in `checkpoint_pending_writes` or
-        # applied, so all of them hold the same message ids.
+        # 在保存、放入 checkpoint_pending_writes 或应用写入之前处理，
+        # 确保这些位置使用相同的消息 ID。
         ensure_message_ids(self.specs, writes)
         if task_id == NULL_TASK_ID:
-            # writes for the null task are accumulated
+            # 空任务的写入采用累积方式保存。
             self.checkpoint_pending_writes = [
                 w
                 for w in self.checkpoint_pending_writes
                 if w[0] != task_id or w[1] not in WRITES_IDX_MAP
             ]
-            # Savers key a regular write by its position in the list, and the
-            # special ones dropped above won't be there next time, so they go
-            # last: a resume saved ahead of an update would move it to a new
-            # slot once the list is saved again, and it would apply twice.
+            # 存储器以列表位置作为普通写入的键，而上面去掉的
+            # 特殊写入下次可能不再出现，因此将其放到末尾。
+            # 否则先于更新保存的恢复写入在再次保存时会移动索引，
+            # 从而被应用两次。
             writes = sorted(writes, key=lambda w: w[0] in WRITES_IDX_MAP)
             writes_to_save: WritesT = [
                 w[1:] for w in self.checkpoint_pending_writes if w[0] == task_id
             ] + list(writes)
         else:
-            # remove existing writes for this task
+            # 移除此任务已有的写入。
             self.checkpoint_pending_writes = [
                 w for w in self.checkpoint_pending_writes if w[0] != task_id
             ]
             writes_to_save = writes
 
-        # check if any writes are to an UntrackedValue channel
+        # 检查是否有写入指向 UntrackedValue 通道。
         if self._has_untracked_channels:
-            # we do not persist untracked values in checkpoints
+            # 检查点不持久化未跟踪的值。
             writes_to_save = [
-                # sanitize UntrackedValues that are nested within Send packets
+                # 清理 Send 数据包中嵌套的 UntrackedValue。
                 (
                     (c, sanitize_untracked_values_in_send(v, self.channels))
                     if c == TASKS and isinstance(v, Send)
                     else (c, v)
                 )
                 for c, v in writes_to_save
-                # dont persist UntrackedValue channel writes
+                # 不持久化 UntrackedValue 通道写入。
                 if not isinstance(self.specs.get(c), UntrackedValue)
             ]
 
-        # save writes
+        # 保存写入。
         self.checkpoint_pending_writes.extend((task_id, c, v) for c, v in writes)
         if self.durability != "exit" and self.checkpointer_put_writes is not None:
             config = patch_configurable(
@@ -553,14 +553,14 @@ class PregelLoop:
                 isinstance(self.specs.get(c), DeltaChannel) for c, _ in writes_to_save
             ):
                 self._delta_write_futs.append(fut)
-            # ERROR_SOURCE_NODE is only appended by commit() when the task
-            # has an error handler (_should_route_to_error_handler), so this
-            # check naturally limits future collection to those tasks.
+            # 只有任务配置了错误处理器时，commit() 才会依据
+            # _should_route_to_error_handler 添加 ERROR_SOURCE_NODE，
+            # 因此此检查自然将 Future 收集限制在这些任务中。
             if self._error_handler_write_futs is not None and any(
                 c == ERROR_SOURCE_NODE for c, _ in writes
             ):
                 self._error_handler_write_futs.append(fut)
-        # output writes
+        # 输出写入。
         if hasattr(self, "tasks"):
             self.output_writes(task_id, writes, cached=cached)
 
@@ -569,7 +569,7 @@ class PregelLoop:
             return
         if not self.checkpoint_pending_writes:
             return
-        # patch config
+        # 修补配置。
         config = patch_configurable(
             self.checkpoint_config,
             {
@@ -579,13 +579,13 @@ class PregelLoop:
                 CONFIG_KEY_CHECKPOINT_ID: self.checkpoint["id"],
             },
         )
-        # Writes loaded with the checkpoint are stored on it already. Saving them
-        # again can file them under new indexes, and then they apply twice.
+        # 随检查点加载的写入已经保存在检查点中；再次保存
+        # 可能将其放到新索引下，导致重复应用。
         by_task = defaultdict(list)
         for task_id, channel, value in self.checkpoint_pending_writes:
             if task_id in self._written_task_ids:
                 by_task[task_id].append((channel, value))
-        # submit writes to checkpointer
+        # 将写入提交给检查点存储器。
         for task_id, writes in by_task.items():
             if self.checkpointer_put_writes_accepts_task_path and hasattr(
                 self, "tasks"
@@ -609,7 +609,7 @@ class PregelLoop:
     def accept_push(
         self, task: PregelExecutableTask, write_idx: int, call: Call | None = None
     ) -> PregelExecutableTask | None:
-        """Accept a PUSH from a task, potentially returning a new task to start."""
+        """接收任务发出的 PUSH，必要时返回一个待启动的新任务。"""
         checkpoint_id_bytes = binascii.unhexlify(self.checkpoint["id"].replace("-", ""))
         null_version = checkpoint_null_version(self.checkpoint)
         if pushed := cast(
@@ -635,14 +635,14 @@ class PregelLoop:
                 cache_policy=self.cache_policy,
             ),
         ):
-            # produce debug output
+            # 产生调试输出。
             self._emit("tasks", map_debug_tasks, [pushed])
-            # save the new task
+            # 保存新任务。
             self.tasks[pushed.id] = pushed
-            # match any pending writes to the new task
+            # 将待处理写入匹配到新任务。
             if self._reapplies_pending_writes:
                 self._reapply_writes_to_succeeded_nodes({pushed.id: pushed})
-            # return the new task, to be started if not run before
+            # 返回新任务；仅在此前未运行时启动。
             return pushed
 
     def schedule_error_handler(
@@ -656,49 +656,49 @@ class PregelLoop:
         raise NotImplementedError
 
     def tick(self) -> bool:
-        """Execute a single iteration of the Pregel loop.
+        """执行 Pregel 循环的一次迭代。
 
         Returns:
-            True if more iterations are needed.
+            若仍需继续迭代则返回 True。
         """
 
-        # check if iteration limit is reached
+        # 检查是否达到迭代上限。
         if self.step > self.stop:
             self.status = "out_of_steps"
-            # stream the checkpoint the last step saved, as a tick that runs would
+            # 流式输出上一步保存的检查点，与正常执行一次 tick 的行为一致。
             self._prepare_tasks_and_emit_checkpoint()
             return False
 
         self._prepare_tasks_and_emit_checkpoint()
 
-        # if no more tasks, we're done
+        # 没有更多任务时，执行结束。
         if not self.tasks:
             self.status = "done"
             return False
 
-        # if there are pending writes from a previous loop, apply them
+        # 若前一轮留下待处理写入，则应用这些写入。
         if self._reapplies_pending_writes and self.checkpoint_pending_writes:
             self._reapply_writes_to_succeeded_nodes(self.tasks)
             self._resume_error_handlers_if_applicable()
 
-        # before execution, check if we should interrupt
+        # 执行前检查是否需要中断。
         if self.interrupt_before and should_interrupt(
             self.checkpoint, self.interrupt_before, self.tasks.values()
         ):
             self.status = "interrupt_before"
             raise GraphInterrupt()
 
-        # stop before running the next tasks if a drain was requested. after
-        # the breakpoint check: a resume passes the next step's breakpoints,
-        # so draining in front of one would skip it
+        # 若收到排空请求，则在运行下一批任务前停止。此检查位于
+        # 断点检查之后，因为恢复操作会越过下一步断点，
+        # 若提前排空，就会跳过这个断点。
         if self.control is not None and self.control.drain_requested:
             self.status = "draining"
             return False
 
-        # produce debug output
+        # 产生调试输出。
         self._emit("tasks", map_debug_tasks, self.tasks.values())
 
-        # print output for any tasks we applied previous writes to
+        # 输出已应用历史写入的任务结果。
         for task in self.tasks.values():
             if task.writes:
                 self.output_writes(task.id, task.writes, cached=True)
@@ -706,7 +706,7 @@ class PregelLoop:
         return True
 
     def after_tick(self) -> None:
-        # finish superstep
+        # 完成当前超步。
         writes = [w for t in self.tasks.values() for w in t.writes]
         self._delta_channels_forced_snapshot.update(
             ch
@@ -714,9 +714,9 @@ class PregelLoop:
             if isinstance(self.specs.get(ch), DeltaChannel) and _get_overwrite(v)[0]
         )
         if self._resume_loaded_writes:
-            # A loaded write reapply didn't hand back belongs to a task this run
-            # drops or reruns: a `Send` that `Command(goto=...)` replaced, or an
-            # error handler that runs again.
+            # 加载后未被重新分配回任务的写入，属于本次运行
+            # 丢弃或重跑的任务：例如被 Command(goto=...) 替换的 Send，
+            # 或需要再次执行的错误处理器。
             self._delta_channels_forced_snapshot.update(
                 delta_channels_with_pending_writes(
                     self.specs,
@@ -728,7 +728,7 @@ class PregelLoop:
                 )
             )
             self._resume_loaded_writes = ()
-        # all tasks have finished
+        # 全部任务已完成。
         self.updated_channels = apply_writes(
             self.checkpoint,
             self.channels,
@@ -736,7 +736,7 @@ class PregelLoop:
             self.checkpointer_get_next_version,
             self.trigger_to_nodes,
         )
-        # produce values output
+        # 输出 values 数据。
         if not self.updated_channels.isdisjoint(
             (self.output_keys,)
             if isinstance(self.output_keys, str)
@@ -745,10 +745,10 @@ class PregelLoop:
             self._emit(
                 "values", map_output_values, self.output_keys, writes, self.channels
             )
-        # capture delta-channel writes for exit-mode accumulator before clearing
+        # 清空前，为退出模式累积器捕获增量通道写入。
         if self._exit_delta_writes is not None:
-            # On the first tick the pending writes still hold the ones loaded
-            # with the checkpoint, which are already stored on it.
+            # 第一个 tick 的待处理写入仍包含随检查点加载的条目，
+            # 这些条目已经保存在该检查点中。
             first = self._exit_first_step is None
             if first:
                 self._exit_first_step = self.step
@@ -766,21 +766,21 @@ class PregelLoop:
                 task = self.tasks.get(tid)
                 path = task_path_str(task.path) if task else ""
                 self._exit_delta_writes.append((self.step, tid, path, ch, v))
-        # clear pending writes
+        # 清空待处理写入。
         self.checkpoint_pending_writes.clear()
-        # only replay (re-execute) done tasks on the first tick
+        # 仅在第一个 tick 重放，也就是重新执行已完成任务。
         self.is_replaying = False
-        # save checkpoint
+        # 保存检查点。
         self._put_checkpoint({"source": "loop"})
-        # after execution, check if we should interrupt
+        # 执行后检查是否需要中断。
         if self.interrupt_after and should_interrupt(
             self.checkpoint, self.interrupt_after, self.tasks.values()
         ):
             self.status = "interrupt_after"
-            # the next tick, which streams this checkpoint, never runs
+            # 负责流式输出此检查点的下一次 tick 将不会执行。
             self._prepare_tasks_and_emit_checkpoint()
             raise GraphInterrupt()
-        # unset resuming flag
+        # 清除恢复标志。
         self.config[CONF].pop(CONFIG_KEY_RESUMING, None)
 
     def _prepare_tasks_and_emit_checkpoint(self) -> None:
@@ -803,7 +803,7 @@ class PregelLoop:
             cache_policy=self.cache_policy,
         )
 
-        # produce debug output
+        # 产生调试输出。
         if self._checkpointer_put_after_previous is not None:
             self._emit(
                 "checkpoints",
@@ -830,51 +830,37 @@ class PregelLoop:
     async def amatch_cached_writes(self) -> Sequence[PregelExecutableTask]:
         raise NotImplementedError
 
-    # private
+    # 内部实现。
 
     @property
     def _reapplies_pending_writes(self) -> bool:
-        """Whether the writes loaded with the checkpoint go back to the tasks
-        that made them, instead of those tasks rerunning."""
+        """判断随检查点加载的写入是否应归还给原任务，而不是重新运行这些任务。"""
         return not self.is_replaying
 
     def _reapply_writes_to_succeeded_nodes(
         self, tasks: Mapping[str, PregelExecutableTask]
     ) -> None:
-        """Restore the output of finished tasks from checkpoint to in-memory tasks.
+        """将检查点中已完成任务的输出恢复到内存任务。
 
-        Unfinished (failed or interrupted) tasks keep empty writes, so the
-        runner re-executes them or routes them to error handlers.
+        未完成、失败或被中断的任务保持空写入，以便运行器重新执行，或将其路由到错误处理器。
         """
-        # Filter first: this runs once per task call, and reading the status of
-        # every task that wrote would make runs with many task calls quadratic.
+        # 先筛选：每次任务调用都会执行此处，若读取所有产生过写入的任务状态，
+        # 任务调用较多时就会出现二次复杂度。
         writes = (w for w in self.checkpoint_pending_writes if w[0] in tasks)
         for tid, status in read_task_statuses(writes).items():
             tasks[tid].writes.extend(status.output)
             self._reapplied_task_ids.add(tid)
 
     def _resume_error_handlers_if_applicable(self) -> None:
-        """On resume, schedule error handlers for tasks that failed in a prior run.
+        """恢复运行时，为先前失败的任务调度错误处理器。
 
-        Called right after ``_reapply_writes_to_succeeded_nodes`` during ``tick()``.
-        At that point, ``_reapply_writes_to_succeeded_nodes`` has already skipped
-        ERROR / ERROR_SOURCE_NODE writes, so a previously-failed task still has
-        empty ``writes``.  Without intervention the runner (which executes only
-        tasks where ``not t.writes``) would re-run the original node.
+        在 `tick()` 中紧接 `_reapply_writes_to_succeeded_nodes` 调用。该方法已跳过 ERROR / ERROR_SOURCE_NODE 写入，所以先前失败任务的 `writes` 仍为空；运行器只执行 `not t.writes` 的任务，若不干预就会重跑原节点。对配置了错误处理器的节点，按以下步骤避免重跑：
 
-        This method prevents that re-execution for nodes that have an error
-        handler:
-
-        1. Scan ``checkpoint_pending_writes`` for ERROR_SOURCE_NODE markers
-           persisted by a prior ``commit()``.  Each marker means "this task
-           already failed and was routed to an error handler".
-        2. For each such task, write ``(ERROR, error)`` into ``task.writes``
-           so the task is no longer empty — the runner will skip it.
-        3. Prepare a fresh error-handler task and add it to ``self.tasks``.
-           Because the handler task starts with empty ``writes``, the runner
-           will pick it up and execute it.
+        1. 扫描 `checkpoint_pending_writes`，寻找先前 `commit()` 持久化的 ERROR_SOURCE_NODE 标记，表示任务已失败并已路由到处理器。
+        2. 将 `(ERROR, error)` 写入对应 `task.writes`，使其不再为空，运行器便会跳过。
+        3. 准备新的错误处理任务并加入 `self.tasks`；该任务初始写入为空，因此会被运行器执行。
         """
-        # Phase 1: collect task-ids that have ERROR_SOURCE_NODE + ERROR pairs.
+        # 阶段一：收集同时具有 ERROR_SOURCE_NODE 和 ERROR 的任务 ID。
         failed: dict[str, BaseException] = {}
         for tid, chan, val in self.checkpoint_pending_writes:
             if chan == ERROR_SOURCE_NODE:
@@ -888,7 +874,7 @@ class PregelLoop:
                 )
                 if error is not None:
                     failed[tid] = error
-        # Phase 2: mark originals as done, schedule handler tasks.
+        # 阶段二：将原任务标为完成，并调度处理器任务。
         for task_id, error in failed.items():
             task = self.tasks.get(task_id)
             if task is None:
@@ -896,9 +882,9 @@ class PregelLoop:
             handler_node = self.nodes[task.name].error_handler_node
             if not handler_node:
                 continue
-            # Non-empty writes → runner's `not t.writes` filter skips this task.
+            # 写入非空，运行器的 not t.writes 筛选会跳过此任务。
             task.writes.append((ERROR, error))
-            # The handler task starts with empty writes → runner will execute it.
+            # 处理器任务初始写入为空，因此运行器会执行它。
             handler_task = prepare_node_error_handler_task(
                 task,
                 handler_node_name=handler_node,
@@ -921,7 +907,7 @@ class PregelLoop:
                 self.tasks[handler_task.id] = handler_task
 
     def _pending_interrupts(self) -> set[str]:
-        """Return the ids of interrupts that are still waiting for an answer."""
+        """返回仍在等待回答的中断 ID。"""
         return {
             interrupt.id
             for status in read_task_statuses(self.checkpoint_pending_writes).values()
@@ -938,14 +924,14 @@ class PregelLoop:
         }
         self._exit_command_writes = []
         self._written_task_ids = set()
-        # Resuming from a previous checkpoint requires two things:
-        # 1. A prior checkpoint exists (channel_versions is non-empty)
-        # 2. The input signals continuation (not a fresh run with new input)
-        # For subgraphs, the parent explicitly sets CONFIG_KEY_RESUMING.
-        # For the outer graph, we infer from the input:
-        #   - None input: resume after interrupt (invoke(None, config))
-        #   - Command input: any Command operates on existing state
-        #   - Same run_id: re-entry into an ongoing run (e.g. stream reconnect)
+        # 从先前检查点恢复需要同时满足两项条件：
+        # 1. 存在历史检查点，即 channel_versions 非空；
+        # 2. 输入表示继续执行，而不是携带新输入启动新运行。
+        # 子图由父图显式设置 CONFIG_KEY_RESUMING。
+        # 外层图则从输入推断：
+        #   - 输入为 None：从中断恢复，例如 invoke(None, config)；
+        #   - 输入为 Command：任何 Command 都作用于已有状态；
+        #   - run_id 相同：重新进入尚在进行的运行，例如流式连接重连。
         configurable = self.config.get(CONF, {})
         input_is_command = isinstance(self.input, Command)
         is_resuming = bool(self.checkpoint["channel_versions"]) and bool(
@@ -961,44 +947,44 @@ class PregelLoop:
             )
         )
 
-        # When replaying from a specific checkpoint, drop cached RESUME
-        # writes so that interrupt() calls re-fire instead of returning
-        # stale values. But if we're actively resuming, keep them —
-        # multi-interrupt scenarios need previously resolved values preserved.
+        # 从特定检查点重放时，丢弃已缓存的 RESUME 写入，
+        # 使 interrupt() 重新触发，而不是返回过期值。
+        # 但主动恢复执行时必须保留这些写入，
+        # 因为多中断场景需要保留已经解决的中断值。
         is_time_traveling = self._addressed and (
-            # Time-travel to a subgraph checkpoint: the parent sets
-            # RESUMING=True (it can't distinguish time-travel from resume),
-            # so we check if this subgraph's own ns is in checkpoint_map.
-            # Normally the map only has ancestor entries (_algo.py); the
-            # subgraph's own entry only appears via get_state(subgraphs=True).
+            # 时间旅行到子图检查点时，父图设置 RESUMING=True，
+            # 因为它无法区分时间旅行和恢复；因此检查
+            # checkpoint_map 中是否包含此子图自身的命名空间。
+            # 通常映射只含祖先条目，见 _algo.py；
+            # 子图自身条目仅由 get_state(subgraphs=True) 引入。
             (
                 self.is_nested
                 and configurable.get(CONFIG_KEY_CHECKPOINT_NS, "")
                 in configurable.get(CONFIG_KEY_CHECKPOINT_MAP, {})
             )
             or not (
-                # Outer graph: resume arrives as Command(resume=...)
+                # 外层图通过 Command(resume=...) 接收恢复请求。
                 (input_is_command and cast(Command, self.input).resume is not None)
-                # Subgraphs: resume arrives via config flag from parent
-                # (subgraph input is a Send arg, not a Command)
+                # 子图通过父图传入的配置标志接收恢复请求，
+                # 因为子图输入是 Send 的参数，而非 Command。
                 or configurable.get(CONFIG_KEY_RESUMING, False)
             )
         )
-        # Finished tasks rerun only on time travel, or on a resume at a
-        # checkpoint the thread has moved past. A resume addressed at the
-        # thread's latest checkpoint hands their writes back, as without an id.
+        # 只有时间旅行或恢复到线程已经越过的检查点时，
+        # 才重跑已完成任务。恢复到线程最新检查点时，
+        # 与未指定 ID 时一样，将已有写入归还给原任务。
         self.is_replaying = is_time_traveling or self._addressed_checkpoint_superseded
         if is_time_traveling:
             self.checkpoint_pending_writes = [
                 w for w in self.checkpoint_pending_writes if w[1] != RESUME
             ]
-        # The parent checkpoint subgraphs replay from, when a fork below would
-        # otherwise move it
+        # 子图重放所依据的父检查点；下方分叉操作
+        # 原本可能改变这个引用。
         replay_bound: RunnableConfig | None = None
-        # Whether this run saves a fork checkpoint (below) to start its branch.
-        # The fork carries a `Command`'s writes itself, so nothing this run
-        # writes is stored on the checkpoint it addressed, which may have
-        # children that replay it.
+        # 判断本次运行是否在下方保存分叉检查点来启动新分支。
+        # 分叉检查点自行携带 Command 写入，保证本次运行
+        # 不将任何写入存到原来指定的检查点上，
+        # 因为该检查点的子检查点可能会重放这些写入。
         forks = (
             is_resuming
             and is_time_traveling
@@ -1008,9 +994,9 @@ class PregelLoop:
             )
         )
         carried: list[PendingWrite] = []
-        # A resume that reapplies the head's pending writes only learns which
-        # of them go back to their tasks once those are scheduled, so
-        # `after_tick` seals the rest. Kept apart from the writes this run adds.
+        # 恢复并重新应用头检查点的待处理写入时，只有任务调度后
+        # 才知道哪些写入应归还原任务，因此由 after_tick
+        # 固化其余写入；它们与本次新增写入分开保存。
         reapplies = is_resuming and self._reapplies_pending_writes
         self._resume_loaded_writes = (
             [w for w in self.checkpoint_pending_writes if w[0] != NULL_TASK_ID]
@@ -1026,7 +1012,7 @@ class PregelLoop:
             )
         )
 
-        # map command to writes
+        # 将 Command 映射为写入。
         if input_is_command:
             if (resume := cast(Command, self.input).resume) is not None:
                 if not self.checkpointer:
@@ -1036,10 +1022,10 @@ class PregelLoop:
 
                 strict = (
                     self.config[CONF].get(CONFIG_KEY_STRICT_RESUME, False)
-                    # Nested calls inherit the parent's configurable.
+                    # 嵌套调用继承父级 configurable 配置。
                     and not self.is_nested
-                    # A finished task can rerun and interrupt again on replay, while
-                    # its earlier output still makes its interrupt look answered.
+                    # 重放时，已完成任务可能再次运行并中断，
+                    # 但先前输出仍可能使其中断看起来已被回答。
                     and not self._addressed_checkpoint_superseded
                 )
                 if resume_is_map := (
@@ -1075,16 +1061,16 @@ class PregelLoop:
                         raise RuntimeError(message)
 
             writes: defaultdict[str, list[tuple[str, Any]]] = defaultdict(list)
-            # group writes by task ID
+            # 按任务 ID 分组写入。
             for tid, c, v in map_command(cmd=cast(Command, self.input)):
                 if not (c == RESUME and resume_is_map):
                     writes[tid].append((c, v))
             if not writes and not resume_is_map:
                 raise EmptyInputError("Received empty Command input")
-            # save writes
+            # 保存写入。
             for tid, ws in writes.items():
                 if forks:
-                    # These skip `put_writes`, which gives messages their ids.
+                    # 这些写入不经过分配消息 ID 的 put_writes。
                     ensure_message_ids(self.specs, ws)
                     carried.extend((tid, c, v) for c, v in ws)
                 else:
@@ -1098,7 +1084,7 @@ class PregelLoop:
             self._delta_channels_forced_snapshot.update(
                 delta_channels_with_pending_writes(self.specs, carried)
             )
-        # apply NULL writes
+        # 应用 NULL_TASK_ID 写入。
         if null_writes := [
             w[1:]
             for w in (*self.checkpoint_pending_writes, *carried)
@@ -1113,47 +1099,47 @@ class PregelLoop:
             )
             if updated_channels is not None:
                 updated_channels.update(null_updated_channels)
-        # proceed past previous checkpoint
+        # 推进到先前检查点之后。
         if is_resuming:
             self.checkpoint["versions_seen"].setdefault(INTERRUPT, {})
             for k in self.channels:
                 if k in self.checkpoint["channel_versions"]:
                     version = self.checkpoint["channel_versions"][k]
                     self.checkpoint["versions_seen"][INTERRUPT][k] = version
-            # When time-traveling (replaying from a specific checkpoint),
-            # save a fork checkpoint so the replayed execution creates a
-            # new branch. Without this, if the execution hits an interrupt
-            # before after_tick() runs, no new checkpoint is created —
-            # the parent's latest checkpoint remains the old one and
-            # subsequent resumes load the wrong state.
-            # Skip for update_state forks (source=update/fork) since they
-            # already have their own fork checkpoint, unless the thread moved
-            # past it: its other children would replay whatever this run
-            # stores on it.
+            # 时间旅行，即从特定检查点重放时，
+            # 先保存分叉检查点，使重放在新分支中执行。
+            # 否则若在 after_tick() 之前触发中断，
+            # 就不会创建新检查点；父图的最新检查点
+            # 仍是原来的检查点，后续恢复便会
+            # 加载错误的状态。
+            # update_state 产生的分叉（source=update/fork）已有自己的
+            # 分叉检查点，通常无需再建；但若线程已越过它，
+            # 仍需新建，避免其他子检查点重放
+            # 本次运行写入它的数据。
             if forks:
                 if (
                     self.checkpoint_metadata.get("source") in ("update", "fork")
                     and self.prev_checkpoint_config
                 ):
                     replay_bound = self.prev_checkpoint_config
-                # Clear old INTERRUPT writes from the loaded checkpoint.
-                # The fork will have a new checkpoint_id which changes
-                # task IDs — stale interrupt writes would accumulate and
-                # confuse the multiple-interrupt check in future resumes.
+                # 清除已加载检查点中的旧 INTERRUPT 写入。
+                # 分叉会产生新的 checkpoint_id，进而改变
+                # 任务 ID；旧中断写入若继续累积，
+                # 会干扰未来恢复时的多中断检查。
                 self.checkpoint_pending_writes = [
                     w for w in self.checkpoint_pending_writes if w[1] != INTERRUPT
                 ]
                 self._put_checkpoint({"source": "fork"})
-            # produce values output
+            # 输出 values 数据。
             self._emit(
                 "values", map_output_values, self.output_keys, True, self.channels
             )
-        # map inputs to channel updates
+        # 将输入映射为通道更新。
         elif input_writes := deque(map_input(input_keys, self.input)):
-            # Before the input is applied, so this run reads the message ids
-            # that are saved with it.
+            # 在应用输入前处理，使本次运行读到的消息 ID
+            # 与保存的输入消息 ID 相同。
             ensure_message_ids(self.specs, input_writes)
-            # discard any unfinished tasks from previous checkpoint
+            # 丢弃先前检查点中的未完成任务。
             discard_tasks = prepare_next_tasks(
                 self.checkpoint,
                 self.checkpoint_pending_writes,
@@ -1174,7 +1160,7 @@ class PregelLoop:
                 for c, v in input_writes
                 if isinstance(self.specs.get(c), DeltaChannel) and _get_overwrite(v)[0]
             )
-            # apply input writes
+            # 应用输入写入。
             updated_channels = apply_writes(
                 self.checkpoint,
                 self.channels,
@@ -1185,25 +1171,25 @@ class PregelLoop:
                 self.checkpointer_get_next_version,
                 self.trigger_to_nodes,
             )
-            # Input writes go through `apply_writes` directly (above) — they
-            # never enter `checkpoint_pending_writes`, so the after_tick
-            # capture site does not see them. In exit mode, capture them
-            # here so `_exit_delta_writes` includes the input's delta writes
-            # alongside per-superstep writes; otherwise the input would be
-            # lost on read (it's not in final_checkpoint.channel_values for
-            # sub-freq channels, and walks ignore target.pending_writes).
+            # 输入写入直接经过上方的 apply_writes，
+            # 不会进入 checkpoint_pending_writes，因此 after_tick
+            # 无法捕获。退出模式需在此捕获，
+            # 使 _exit_delta_writes 同时包含输入增量
+            # 和各超步写入；否则读取时会丢失输入，
+            # 因为未到快照频率的通道不会出现在 final_checkpoint.channel_values 中，
+            # 而祖先遍历也不会读取目标检查点自身的 pending_writes。
             if self._exit_delta_writes is not None:
                 for c, v in input_writes:
                     if isinstance(self.specs.get(c), DeltaChannel):
                         self._exit_delta_writes.append(
                             (self.step, NULL_TASK_ID, "", c, v)
                         )
-            # A DeltaChannel reads its input from the writes stored on the
-            # checkpoint this run starts from, under a task id of their own:
-            # readers apply a checkpoint's NULL_TASK_ID writes as its own state.
-            # A new thread has no checkpoint to store them on, and one a
-            # `checkpoint_id` addressed may have children that would read them,
-            # so then the input checkpoint snapshots the channel instead.
+            # DeltaChannel 从本次运行起始检查点中
+            # 独立任务 ID 下的写入读取输入；
+            # 读取器会将 NULL_TASK_ID 写入作为检查点自身的状态应用。
+            # 新线程尚无可保存这些写入的检查点；由 checkpoint_id
+            # 指定的检查点也可能已有子检查点，会读到这些写入，
+            # 因此这些情况下改由输入检查点保存通道快照。
             if self.durability != "exit":
                 delta_input = [
                     (c, v)
@@ -1218,28 +1204,28 @@ class PregelLoop:
                     self._delta_channels_forced_snapshot.update(
                         c for c, _ in delta_input
                     )
-            # save input checkpoint
+            # 保存输入检查点。
             self.updated_channels = updated_channels
             self._put_checkpoint({"source": "input"})
         elif CONFIG_KEY_RESUMING not in configurable:
             raise EmptyInputError(f"Received no input for {input_keys}")
-        # Propagate resuming and replaying flags to subgraphs.
+        # 将恢复和重放标志传给子图。
         if not self.is_nested:
-            # Pass the resolved before-bound checkpoint ID so subgraphs can
-            # find their corresponding checkpoint without re-fetching the
-            # parent. For forks (source=update/fork), use the fork's parent
-            # checkpoint ID since the fork was created after the subgraph's
-            # checkpoints from the original execution.
+            # 传入已解析的上界检查点 ID，使子图无需
+            # 重新获取父图，也能找到对应检查点。
+            # 对于 source=update/fork 的分叉，使用分叉的父检查点 ID，
+            # 因为分叉创建时间晚于原始执行中
+            # 子图检查点的创建时间。
             #
-            # Only gate on is_time_traveling (not _addressed). When the
-            # client resumes with an explicit checkpoint_id that happens to
-            # point at the current head (e.g. LangGraph Studio sending
-            # `checkpoint: {checkpoint_id}` alongside Command(resume=...)),
-            # the run is addressed but not time traveling. In that
-            # case subgraphs should load their latest checkpoint normally,
-            # not go through ReplayState's before-bound lookup which would
-            # miss subgraph checkpoints created during processing of the
-            # current parent step.
+            # 这里只判断 is_time_traveling，而非 _addressed。
+            # 客户端可能带着显式 checkpoint_id 恢复，
+            # 但该 ID 恰好指向当前头检查点，例如 LangGraph Studio
+            # 同时发送 checkpoint: {checkpoint_id} 和 Command(resume=...)。
+            # 这种情况指定了检查点，却没有进行时间旅行；
+            # 子图应正常加载其最新检查点，
+            # 而不应走 ReplayState 的上界查找，
+            # 否则会漏掉处理父图当前步骤期间
+            # 创建的子图检查点。
             replay_state: ReplayState | None = None
             if is_time_traveling:
                 replay_checkpoint_id = self.checkpoint["id"]
@@ -1266,42 +1252,42 @@ class PregelLoop:
                     CONFIG_KEY_REPLAY_STATE: replay_state,
                 },
             )
-        # set flag
+        # 设置标志。
         self.status = "pending"
         if is_resuming:
             self._push_graph_lifecycle_event("resume")
         return updated_channels
 
     def _put_checkpoint(self, metadata: CheckpointMetadata) -> None:
-        # `is` (object identity) — not `==`. Three of four call sites pass a
-        # fresh dict ({"source":"input"|"loop"|"fork"}); only
-        # `_suppress_interrupt`(will rename to _on_loop_exit soon)
-        # at exit reuses the existing `self.checkpoint_metadata` instance. So
-        # `metadata is self.checkpoint_metadata` is True only on the exit call,
-        # which is what we use to gate exit-only behaviour (skip count-bump,
-        # don't replace metadata). Could be replaced by an explicit
-        # `exiting: bool = False` parameter; left as-is to match the existing
-        # idiom in this file.
-        # TODO: replace with an explicit `exiting: bool = False` parameter.
+        # 此处使用 is 判断对象身份，而不是 ==。四处调用中有三处传入
+        # 新的字典（source 为 input、loop 或 fork）；只有
+        # 退出时的 _suppress_interrupt（之后计划改名为 _on_loop_exit）
+        # 复用已有的 self.checkpoint_metadata 实例。因此
+        # metadata is self.checkpoint_metadata 仅在退出调用中为 True，
+        # 可用于限定退出专属行为，例如跳过计数递增、
+        # 保留原元数据。也可以改成显式
+        # exiting: bool = False 参数；目前保持原样，
+        # 以延续本文件已有用法。
+        # TODO：替换为显式 exiting: bool = False 参数。
         exiting = metadata is self.checkpoint_metadata
         if exiting and self.checkpoint["id"] == self.checkpoint_id_saved:
-            # checkpoint already saved
+            # 检查点已经保存。
             return
-        # Per-delta-channel counter bookkeeping.
+        # 维护每个增量通道的计数。
         #
-        # Each delta channel tracks a (updates, supersteps) tuple:
-        # - `updates` increments only when the channel is written this step.
-        # - `supersteps` increments every superstep regardless.
+        # 各增量通道记录一个 (updates, supersteps) 元组：
+        # - updates 仅在本超步写入该通道时递增。
+        # - supersteps 无论是否写入，每个超步都递增。
         #
-        # `_put_checkpoint` is called once per superstep with a fresh
-        # metadata dict (source="input"|"loop"|"fork") — those are the
-        # intermediate calls that bump counters. In exit mode,
-        # `_suppress_interrupt`(will rename to _on_loop_exit soon)
-        # additionally calls `_put_checkpoint(self.checkpoint_metadata)` AT
-        # EXIT to commit the final checkpoint — this runs *after* the last
-        # intermediate call already counted the last superstep. So the
-        # exit call must NOT bump again or it would double-count the last
-        # superstep.
+        # 每个超步以新的 metadata 字典调用一次 _put_checkpoint，
+        # source 为 input、loop 或 fork；这些中间调用
+        # 负责递增计数。退出模式下，
+        # _suppress_interrupt（之后计划改名为 _on_loop_exit）
+        # 还会在退出时调用 _put_checkpoint(self.checkpoint_metadata)
+        # 以提交最终检查点；此调用发生在
+        # 最后一次中间调用已经计算过该超步之后。
+        # 因此退出调用绝不能再次递增，
+        # 否则最后一个超步会被重复计数。
         if not exiting:
             prev_counters = dict(
                 self.checkpoint_metadata.get("counters_since_delta_snapshot") or {}
@@ -1321,11 +1307,11 @@ class PregelLoop:
             new_counters = dict(
                 self.checkpoint_metadata.get("counters_since_delta_snapshot") or {}
             )
-        # do checkpoint?
+        # 判断是否需要保存检查点。
         do_checkpoint = self._checkpointer_put_after_previous is not None and (
             exiting or self.durability != "exit"
         )
-        # create new checkpoint
+        # 创建新检查点。
         channels_to_snapshot = (
             delta_channels_to_snapshot(
                 {k: self.channels[k] for k in self._delta_channel_names},
@@ -1358,7 +1344,7 @@ class PregelLoop:
             self.checkpoint_metadata["counters_since_delta_snapshot"] = non_zero
         elif "counters_since_delta_snapshot" in self.checkpoint_metadata:
             del self.checkpoint_metadata["counters_since_delta_snapshot"]
-        # sanitize TASK channel in the checkpoint before saving (durability=="exit")
+        # 保存前清理检查点中的 TASK 通道，适用于 durability=="exit"。
         if TASKS in self.checkpoint["channel_values"] and self._has_untracked_channels:
             sanitized_tasks = [
                 sanitize_untracked_values_in_send(value, self.channels)
@@ -1367,7 +1353,7 @@ class PregelLoop:
                 for value in self.checkpoint["channel_values"][TASKS]
             ]
             self.checkpoint["channel_values"][TASKS] = sanitized_tasks
-        # bail if no checkpointer
+        # 未配置存储器时直接返回。
 
         if do_checkpoint and self._checkpointer_put_after_previous is not None:
             self.prev_checkpoint_config = (
@@ -1392,13 +1378,13 @@ class PregelLoop:
             )
             self.checkpoint_previous_versions = channel_versions
 
-            # Take this checkpoint's writes now: saves run in the background
-            # and can start out of order, so a save that took them itself
-            # could get another checkpoint's writes.
+            # 在此捕获当前检查点的写入：保存任务在后台运行，
+            # 启动顺序可能不同；若由保存任务自行读取，
+            # 可能误取另一个检查点的写入。
             delta_write_futs, self._delta_write_futs = self._delta_write_futs, []
-            # save it, without blocking
-            # if there's a previous checkpoint save in progress, wait for it
-            # ensuring checkpointers receive checkpoints in order
+            # 以非阻塞方式保存。
+            # 若前一个检查点仍在保存，则先等待它完成，
+            # 确保检查点存储器按顺序接收检查点。
             self._put_checkpoint_fut = self.submit(
                 self._checkpointer_put_after_previous,
                 getattr(self, "_put_checkpoint_fut", None),
@@ -1416,16 +1402,13 @@ class PregelLoop:
                 },
             }
         if not exiting:
-            # increment step
+            # 递增步骤编号。
             self.step += 1
 
     def _put_exit_delta_writes(self) -> None:
-        """Stage stub + accumulated delta writes so final_checkpoint's put
-        waits on them (visibility invariant: both must be durable before
-        final_checkpoint becomes visible to readers).
+        """准备占位检查点和累积增量写入，使最终检查点的 put 等待它们完成。
 
-        Stub is created lazily — only when no persisted parent exists AND at
-        least one delta channel has writes that won't be snapshotted.
+        可见性要求：这两者必须先持久化，最终检查点才能对读取者可见。仅当没有持久化父检查点，且至少一个增量通道存在不会被快照覆盖的写入时，才按需创建占位检查点。
         """
         if (
             not self._exit_delta_writes
@@ -1435,9 +1418,9 @@ class PregelLoop:
         ):
             return
 
-        # A checkpoint a `checkpoint_id` addressed may already have children,
-        # which read the writes stored on it, so then the channels this run
-        # wrote snapshot instead.
+        # checkpoint_id 指定的检查点可能已有子检查点，
+        # 它们会读取存放于此的写入；因此这种情况下，
+        # 本次运行写入的通道改为保存快照。
         if self._has_persisted_parent and not self._loaded_latest:
             self._delta_channels_forced_snapshot.update(
                 w[3] for w in self._exit_delta_writes
@@ -1460,19 +1443,19 @@ class PregelLoop:
             return
 
         if self._has_persisted_parent:
-            # _initial_checkpoint_config's checkpoint_id is the saved parent's
-            # id (saver returned a real tuple at __enter__).
+            # _initial_checkpoint_config 的 checkpoint_id 是已保存父检查点的 ID，
+            # 因为存储器在 __enter__ 中返回了真实元组。
             anchor_config = self._initial_checkpoint_config
         else:
             stub_cp = empty_checkpoint()
             stub_cp["id"] = self.checkpoint_id_saved
             stub_cp["ts"] = datetime.now(timezone.utc).isoformat()
-            # Stub has no parent (checkpoint_id=None in config).
+            # 占位检查点没有父节点，因此配置中的 checkpoint_id=None。
             stub_put_config = patch_configurable(
                 self._initial_checkpoint_config,
                 {CONFIG_KEY_CHECKPOINT_ID: None},
             )
-            # Anchor config for put_writes: checkpoint_id = stub's id.
+            # 供 put_writes 使用的锚点配置，checkpoint_id 为占位检查点的 ID。
             anchor_config = patch_configurable(
                 self._initial_checkpoint_config,
                 {CONFIG_KEY_CHECKPOINT_ID: stub_cp["id"]},
@@ -1486,16 +1469,16 @@ class PregelLoop:
                 {"step": -2},
                 {},
             )
-            # Set checkpoint_config so final_checkpoint's _put_checkpoint
-            # sees the stub as its parent.
+            # 设置 checkpoint_config，使最终检查点的 _put_checkpoint
+            # 将占位检查点视作父节点。
             self.checkpoint_config = anchor_config
 
-        # The checkpoint's own superstep keeps its real task paths, so it
-        # interleaves with the writes a resume loaded from it. Its task ids stay
-        # synthetic: under the real id, a run whose final checkpoint fails to
-        # save would leave the resumed task looking done to the next resume.
-        # Later supersteps sort after every real task path and task id, in step
-        # order, so this holds whether a saver orders by path or by id.
+        # 检查点自身超步保留真实任务路径，以便与恢复时
+        # 从该检查点加载的写入交错排序；任务 ID 则仍使用
+        # 合成 ID，否则若最终检查点保存失败，下一次恢复
+        # 会将真实 ID 下的恢复任务误判为已完成。
+        # 后续超步按步骤顺序排在所有真实任务路径和 ID 之后，
+        # 保证存储器无论按路径还是 ID 排序都保持一致。
         grouped: dict[tuple[str, str], list[tuple[str, Any]]] = {}
         for step, tid, path, ch, v in pending:
             if tid == NULL_TASK_ID:
@@ -1539,24 +1522,24 @@ class PregelLoop:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool | None:
-        # persist current checkpoint and writes
+        # 持久化当前检查点及写入。
         if self.durability == "exit" and (
-            # if it's a top graph
+            # 如果是顶层图，
             not self.is_nested
-            # or a nested graph with error or interrupt
+            # 或出现错误或中断的嵌套图，
             or exc_value is not None
-            # or a nested graph with checkpointer=True
+            # 或设置了 checkpointer=True 的嵌套图。
             or all(NS_END not in part for part in self.checkpoint_ns)
         ):
             self._put_exit_delta_writes()
             self._put_checkpoint(self.checkpoint_metadata)
             self._put_pending_writes()
-        # suppress interrupt
+        # 抑制中断。
         if isinstance(exc_value, GraphInterrupt) and not self.is_nested:
             interrupt = exc_value
             interrupts = tuple(interrupt.args[0]) if interrupt.args else ()
             self._push_graph_lifecycle_event("interrupt", interrupts=interrupts)
-            # emit one last "values" event, with pending writes applied
+            # 应用待处理写入后，再发出最后一个 values 事件。
             if (
                 hasattr(self, "tasks")
                 and self.checkpoint_pending_writes
@@ -1581,19 +1564,19 @@ class PregelLoop:
                         [w for t in self.tasks.values() for w in t.writes],
                         self.channels,
                     )
-            # emit INTERRUPT if exception is empty (otherwise emitted by put_writes)
+            # 异常内容为空时发出 INTERRUPT，否则由 put_writes 发出。
             if not interrupt.args or not interrupt.args[0]:
                 interrupt_payload = interrupt.args[0] if interrupt.args else ()
                 self._emit(
                     "updates",
                     lambda: iter([{INTERRUPT: interrupt_payload}]),
                 )
-            # save final output
+            # 保存最终输出。
             self.output = read_channels(self.channels, self.output_keys)
-            # suppress interrupt
+            # 抑制中断。
             return True
         elif exc_type is None:
-            # save final output
+            # 保存最终输出。
             self.output = read_channels(self.channels, self.output_keys)
 
     def _emit(
@@ -1611,7 +1594,7 @@ class PregelLoop:
         for v in values(*args, **kwargs):
             if mode in self.stream.modes:
                 self.stream((self.checkpoint_ns, mode, v))
-            # "debug" mode is "checkpoints" or "tasks" with a wrapper dict
+            # debug 模式是带有包装字典的 checkpoints 或 tasks 模式。
             if debug_remap:
                 self.stream(
                     (
@@ -1641,9 +1624,9 @@ class PregelLoop:
             ):
                 return
             if writes[0][0] == INTERRUPT:
-                # in loop.py we append a bool to the PUSH task paths to indicate
-                # whether or not a call was present. If so,
-                # we don't emit the interrupt as it'll be emitted by the parent
+                # loop.py 会在 PUSH 任务路径末尾追加布尔值，
+                # 用于表示是否存在 call；若存在，
+                # 此处不发出中断，由父级负责发出。
                 if task.path[0] == PUSH and task.path[-1] is True:
                     return
                 interrupts = [
@@ -1661,11 +1644,11 @@ class PregelLoop:
                     self._emit("updates", lambda: iter(interrupts))
                 if "values" in stream_modes:
                     current_values = read_channels(self.channels, self.output_keys)
-                    # self.output_keys is a sequence, stream chunk contains entire state and interrupts
+                    # self.output_keys 为序列时，流片段包含完整状态和中断。
                     if isinstance(current_values, dict):
                         current_values[INTERRUPT] = interrupts[0][INTERRUPT]
                         self._emit("values", lambda: iter([current_values]))
-                    # self.output_keys is a string, stream chunk contains only interrupts
+                    # self.output_keys 为字符串时，流片段仅包含中断。
                     else:
                         self._emit("values", lambda: iter(interrupts))
             elif writes[0][0] != ERROR:
@@ -1791,7 +1774,7 @@ class SyncPregelLoop(PregelLoop, AbstractContextManager):
         handler_node = self.nodes[failed_task.name].error_handler_node
         if not handler_node:
             return None
-        # ensure error + ERROR_SOURCE_NODE writes are durable before handler runs
+        # 确保错误和 ERROR_SOURCE_NODE 写入在处理器运行前已经持久化。
         if self._error_handler_write_futs:
             futs, self._error_handler_write_futs = self._error_handler_write_futs, []
             concurrent.futures.wait(futs)
@@ -1825,7 +1808,7 @@ class SyncPregelLoop(PregelLoop, AbstractContextManager):
     def put_writes(
         self, task_id: str, writes: WritesT, *, cached: bool = False
     ) -> None:
-        """Put writes for a task, to be read by the next tick."""
+        """记录任务写入，供下一次 tick 读取。"""
         super().put_writes(task_id, writes, cached=cached)
         if cached or not writes or self.cache is None or not hasattr(self, "tasks"):
             return
@@ -1842,43 +1825,43 @@ class SyncPregelLoop(PregelLoop, AbstractContextManager):
             },
         )
 
-    # context manager
+    # 上下文管理器。
 
     def __enter__(self) -> Self:
         self._graph_lifecycle_events = deque()
         if not self.checkpointer:
             saved = None
         elif self.checkpoint_config[CONF].get(CONFIG_KEY_CHECKPOINT_ID):
-            # Explicit checkpoint_id requested — fetch that exact checkpoint.
-            # This covers both normal replay and subgraphs resolved via
-            # checkpoint_map during time-travel.
+            # 显式指定 checkpoint_id 时，获取该精确检查点。
+            # 这同时涵盖普通重放，以及时间旅行期间
+            # 通过 checkpoint_map 解析出的子图。
             saved = self.checkpointer.get_tuple(self.checkpoint_config)
             if saved is not None:
                 self._addressed_checkpoint_superseded = checkpoint_superseded(
                     self.checkpointer, self.checkpoint_config, saved
                 )
         elif replay_state := self.config[CONF].get(CONFIG_KEY_REPLAY_STATE):
-            # Subgraph replay: the parent is replaying and passed us a
-            # replay_state with its checkpoint_id. Look up our checkpoint
-            # from the parent's checkpoint_map instead of fetching latest.
+            # 子图重放：父图正在重放，并通过 replay_state
+            # 传入自身的 checkpoint_id。应从父图的
+            # checkpoint_map 查找对应检查点，而非获取最新项。
             saved = replay_state.get_checkpoint(
                 self.config[CONF].get(CONFIG_KEY_CHECKPOINT_NS, ""),
                 self.checkpointer,
                 self.checkpoint_config,
             )
-            # Clear RESUMING so _first re-applies input instead of resuming.
-            # This recreates ephemeral routing channels so nodes trigger
-            # naturally via version comparison.
+            # 清除 RESUMING，让 _first 重新应用输入而非执行恢复。
+            # 这样会重建临时路由通道，使节点
+            # 通过版本比较自然触发。
             self.config[CONF].pop(CONFIG_KEY_RESUMING, None)
         else:
-            # Normal case: fetch the most recent checkpoint for this
-            # graph/thread. Returns None on first invocation.
+            # 普通情况：获取此图和线程的最新检查点；
+            # 首次调用时返回 None。
             saved = self.checkpointer.get_tuple(self.checkpoint_config)
             self._loaded_latest = True
 
-        # Capture before the synthetic-empty fallback below overwrites `saved`.
-        # `_put_exit_delta_writes` uses this on first run (no persisted parent)
-        # to lazy-create a stub instead of anchoring delta writes on a parent.
+        # 在下方合成空检查点覆盖 saved 之前记录此状态。
+        # 首次运行时没有持久化父检查点，_put_exit_delta_writes
+        # 据此按需创建占位检查点，而不使用父检查点作锚点。
         self._has_persisted_parent = saved is not None
         if saved is None:
             saved = CheckpointTuple(
@@ -1937,7 +1920,7 @@ class SyncPregelLoop(PregelLoop, AbstractContextManager):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool | None:
-        # unwind stack
+        # 展开并退出上下文栈。
         return self.stack.__exit__(exc_type, exc_value, traceback)
 
 
@@ -2047,7 +2030,7 @@ class AsyncPregelLoop(PregelLoop, AbstractAsyncContextManager):
         handler_node = self.nodes[failed_task.name].error_handler_node
         if not handler_node:
             return None
-        # ensure error + ERROR_SOURCE_NODE writes are durable before handler runs
+        # 确保错误和 ERROR_SOURCE_NODE 写入在处理器运行前已经持久化。
         if self._error_handler_write_futs:
             futs, self._error_handler_write_futs = self._error_handler_write_futs, []
             await asyncio.gather(*futs)
@@ -2081,7 +2064,7 @@ class AsyncPregelLoop(PregelLoop, AbstractAsyncContextManager):
     def put_writes(
         self, task_id: str, writes: WritesT, *, cached: bool = False
     ) -> None:
-        """Put writes for a task, to be read by the next tick."""
+        """记录任务写入，供下一次 tick 读取。"""
         super().put_writes(task_id, writes, cached=cached)
         if cached or not writes or self.cache is None or not hasattr(self, "tasks"):
             return
@@ -2098,43 +2081,43 @@ class AsyncPregelLoop(PregelLoop, AbstractAsyncContextManager):
             },
         )
 
-    # context manager
+    # 上下文管理器。
 
     async def __aenter__(self) -> Self:
         self._graph_lifecycle_events = deque()
         if not self.checkpointer:
             saved = None
         elif self.checkpoint_config[CONF].get(CONFIG_KEY_CHECKPOINT_ID):
-            # Explicit checkpoint_id requested — fetch that exact checkpoint.
-            # This covers both normal replay and subgraphs resolved via
-            # checkpoint_map during time-travel.
+            # 显式指定 checkpoint_id 时，获取该精确检查点。
+            # 这同时涵盖普通重放，以及时间旅行期间
+            # 通过 checkpoint_map 解析出的子图。
             saved = await self.checkpointer.aget_tuple(self.checkpoint_config)
             if saved is not None:
                 self._addressed_checkpoint_superseded = await acheckpoint_superseded(
                     self.checkpointer, self.checkpoint_config, saved
                 )
         elif replay_state := self.config[CONF].get(CONFIG_KEY_REPLAY_STATE):
-            # Subgraph replay: the parent is replaying and passed us a
-            # replay_state with its checkpoint_id. Look up our checkpoint
-            # from the parent's checkpoint_map instead of fetching latest.
+            # 子图重放：父图正在重放，并通过 replay_state
+            # 传入自身的 checkpoint_id。应从父图的
+            # checkpoint_map 查找对应检查点，而非获取最新项。
             saved = await replay_state.aget_checkpoint(
                 self.config[CONF].get(CONFIG_KEY_CHECKPOINT_NS, ""),
                 self.checkpointer,
                 self.checkpoint_config,
             )
-            # Clear RESUMING so _first re-applies input instead of resuming.
-            # This recreates ephemeral routing channels so nodes trigger
-            # naturally via version comparison.
+            # 清除 RESUMING，让 _first 重新应用输入而非执行恢复。
+            # 这样会重建临时路由通道，使节点
+            # 通过版本比较自然触发。
             self.config[CONF].pop(CONFIG_KEY_RESUMING, None)
         else:
-            # Normal case: fetch the most recent checkpoint for this
-            # graph/thread. Returns None on first invocation.
+            # 普通情况：获取此图和线程的最新检查点；
+            # 首次调用时返回 None。
             saved = await self.checkpointer.aget_tuple(self.checkpoint_config)
             self._loaded_latest = True
 
-        # Capture before the synthetic-empty fallback below overwrites `saved`.
-        # `_put_exit_delta_writes` uses this on first run (no persisted parent)
-        # to lazy-create a stub instead of anchoring delta writes on a parent.
+        # 在下方合成空检查点覆盖 saved 之前记录此状态。
+        # 首次运行时没有持久化父检查点，_put_exit_delta_writes
+        # 据此按需创建占位检查点，而不使用父检查点作锚点。
         self._has_persisted_parent = saved is not None
         if saved is None:
             saved = CheckpointTuple(
@@ -2195,14 +2178,14 @@ class AsyncPregelLoop(PregelLoop, AbstractAsyncContextManager):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool | None:
-        # unwind stack
+        # 展开并退出上下文栈。
         exit_task = asyncio.create_task(
             self.stack.__aexit__(exc_type, exc_value, traceback)
         )
         try:
             return await exit_task
         except asyncio.CancelledError as e:
-            # Bubble up the exit task upon cancellation to permit the API
-            # consumer to await it before e.g., reusing the DB connection.
+            # 取消时向上传递退出任务，使 API 调用方能够
+            # 在复用数据库连接等操作前，先等待退出任务完成。
             e.args = (*e.args, exit_task)
             raise

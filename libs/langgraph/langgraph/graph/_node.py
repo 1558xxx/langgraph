@@ -70,9 +70,9 @@ class _NodeWithRuntime(Protocol[NodeInputT_contra, ContextT]):
     ) -> Any: ...
 
 
-# TODO: we probably don't want to explicitly support the config / store signatures once
-# we move to adding a context arg. Maybe what we do is we add support for kwargs with param spec
-# this is purely for typing purposes though, so can easily change in the coming weeks.
+# TODO：引入 context 参数后，可能不再显式支持 config / store 签名；
+# 也许可以改用 ParamSpec 为关键字参数提供类型支持。
+# 这里仅涉及类型标注，因此未来几周仍可调整。
 StateNode: TypeAlias = (
     _Node[NodeInputT]
     | _NodeWithConfig[NodeInputT]
@@ -100,4 +100,4 @@ class StateNodeSpec(Generic[NodeInputT, ContextT]):
     defer: bool = False
     timeout: TimeoutPolicy | None = None
     trace_policy: TracePolicy | None = None
-    """Optional policy controlling what this node records on its trace run."""
+    """可选策略，用于控制此节点在追踪运行中记录的内容。"""

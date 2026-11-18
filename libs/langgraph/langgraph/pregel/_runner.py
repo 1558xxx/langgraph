@@ -56,8 +56,8 @@ from langgraph.types import (
 F = TypeVar("F", concurrent.futures.Future, asyncio.Future)
 E = TypeVar("E", threading.Event, asyncio.Event)
 
-# List of filenames to exclude from exception traceback
-# Note: Frames will be removed if they are the last frame in traceback, recursively
+# 从异常回溯中排除的文件名列表。
+# 注意：仅当这些帧位于回溯末尾时才移除，并递归处理。
 EXCLUDED_FRAME_FNAMES = (
     "langgraph/pregel/retry.py",
     "langgraph/pregel/runner.py",
@@ -72,9 +72,9 @@ EXCLUDED_FRAME_FNAMES = (
 class FuturesDict(Generic[F, E], dict[F, PregelExecutableTask | None]):
     event: E
     callback: weakref.ref[Callable[[PregelExecutableTask, BaseException | None], None]]
-    # Stop condition is injected by PregelRunner instead of hard-coded here.
-    # This lets the runner treat graph-error-handled exceptions as non-fatal
-    # so `on_done` does not trigger an early stop for those futures.
+    # 停止条件由 PregelRunner 注入，而非在此写死。
+    # 这样运行器可将已由图级错误处理器接管的异常视为非致命错误，
+    # 避免 on_done 因这些 Future 提前停止。
     should_stop: Callable[[set[F]], bool]
     counter: int
     done: set[F]
@@ -89,7 +89,7 @@ class FuturesDict(Generic[F, E], dict[F, PregelExecutableTask | None]):
         ],
         should_stop: Callable[[set[F]], bool],
         future_type: type[F],
-        # used for generic typing, newer py supports FutureDict[...](...)
+        # 用于泛型类型标注；较新 Python 支持 FutureDict[...](...)。
     ) -> None:
         super().__init__()
         self.lock = threading.Lock()
@@ -117,7 +117,7 @@ class FuturesDict(Generic[F, E], dict[F, PregelExecutableTask | None]):
         task: PregelExecutableTask,
         fut: F,
     ) -> None:
-        # Called automatically by future.add_done_callback registered in __setitem__.
+        # 由 __setitem__ 注册的 future.add_done_callback 自动调用。
         try:
             if cb := self.callback():
                 cb(task, _exception(fut))
@@ -125,20 +125,21 @@ class FuturesDict(Generic[F, E], dict[F, PregelExecutableTask | None]):
             with self.lock:
                 self.done.add(fut)
                 self.counter -= 1
-                # Only a future that raised can meet the stop condition, so check
-                # those instead of every done future (quadratic in wide steps).
+                # 只有抛出异常的 Future 才可能满足停止条件，因此只检查它们，
+                # 避免扫描所有已完成 Future，导致宽超步中出现二次复杂度。
                 if not fut.cancelled() and fut.exception() is not None:
                     self.failed.add(fut)
-                # Wake waiter when all tracked futures are done, or when runner-level
-                # stop condition is met (for example, a non-handled fatal exception).
+                # 所有跟踪的 Future 完成，或满足运行器级停止条件时唤醒等待者，
+                # 例如出现未处理的致命异常。
                 if self.counter == 0 or self.should_stop(self.failed):
                     self.event.set()
 
 
 class PregelRunner:
-    """Responsible for executing a set of Pregel tasks concurrently, committing
-    their writes, yielding control to caller when there is output to emit, and
-    interrupting other tasks if appropriate."""
+    """并发执行一组 Pregel 任务并提交其写入。
+
+    有输出可发送时将控制权交还调用方，必要时中断其他任务。
+    """
 
     def __init__(
         self,
@@ -166,9 +167,9 @@ class PregelRunner:
         self.error_handler_nodes = set(self.node_error_handler_map.values())
         self.schedule_error_handler = schedule_error_handler
         self.aschedule_error_handler = aschedule_error_handler
-        # Exception object ids that are already routed to graph-level error handler.
-        # These ids are consulted by stop/panic checks to avoid re-raising handled
-        # exceptions via the normal fatal path in the same run.
+        # 已经路由到图级错误处理器的异常对象 ID。
+        # 停止和异常传播检查会查询这些 ID，避免在同一次运行中
+        # 再次通过普通致命错误路径抛出已处理的异常。
         self._handled_exception_ids: set[int] = set()
 
     def _should_route_to_error_handler(self, task: PregelExecutableTask) -> bool:
@@ -198,9 +199,9 @@ class PregelRunner:
             ),
             future_type=concurrent.futures.Future,
         )
-        # give control back to the caller
+        # 将控制权交还调用方。
         yield
-        # fast path if single task with no timeout and no waiter
+        # 仅有一个任务且没有超时或等待者时，使用快速路径。
         if len(tasks) == 0:
             return
         elif len(tasks) == 1 and timeout is None and get_waiter is None:
@@ -233,16 +234,16 @@ class PregelRunner:
                     if handler_task := self.schedule_error_handler(t, exc):
                         tasks = (handler_task,)
                         scheduled_error_handler = True
-                        # Continue to the regular scheduling path for handler execution.
+                        # 转入常规调度路径，以执行错误处理器。
                 if reraise and futures:
                     if id(exc) not in self._handled_exception_ids:
-                        # will be re-raised after futures are done
+                        # 待所有 Future 完成后重新抛出。
                         fut: concurrent.futures.Future = concurrent.futures.Future()
                         fut.set_exception(exc)
                         futures.done.add(fut)
                         futures.failed.add(fut)
                 elif reraise and id(exc) not in self._handled_exception_ids:
-                    # let the caller stream this task's result before it raises
+                    # 抛出异常前，先让调用方流式输出此任务结果。
                     yield
                     if tb := exc.__traceback__:
                         while tb.tb_next is not None and any(
@@ -253,15 +254,15 @@ class PregelRunner:
                         exc.__traceback__ = tb
                     raise
             if not futures and not scheduled_error_handler:
-                # maybe `t` scheduled another task
+                # t 可能调度了另一个任务。
                 return
             else:
                 if not scheduled_error_handler:
-                    tasks = ()  # don't reschedule this task
-        # add waiter task if requested
+                    tasks = ()  # 不重复调度此任务。
+        # 按需添加等待任务。
         if get_waiter is not None:
             futures[get_waiter()] = None
-        # schedule tasks
+        # 调度任务。
         for t in tasks:
             fut = self.submit()(  # type: ignore[misc]
                 run_with_retry,
@@ -280,9 +281,9 @@ class PregelRunner:
                 __reraise_on_exit__=reraise,
             )
             futures[fut] = t
-        # execute tasks, and wait for one to fail or all to finish.
-        # each task is independent from all other concurrent tasks
-        # yield updates/debug output as each task finishes
+        # 执行任务，等待任一失败或全部完成。
+        # 每个任务都独立于其他并发任务。
+        # 各任务完成时，逐一输出更新和调试信息。
         end_time = timeout + time.monotonic() if timeout else None
         handled_futures: set[concurrent.futures.Future[Any]] = set()
         while len(futures) > (1 if get_waiter is not None else 0):
@@ -292,12 +293,12 @@ class PregelRunner:
                 timeout=(max(0, end_time - time.monotonic()) if end_time else None),
             )
             if not done:
-                break  # timed out
+                break  # 已超时。
             done_for_stop: set[concurrent.futures.Future[Any]] = set()
             for fut in done:
                 task = futures.pop(fut)
                 if task is None:
-                    # waiter task finished, schedule another
+                    # 等待任务已完成，再调度一个等待任务。
                     if inflight and get_waiter is not None:
                         futures[get_waiter()] = None
                 elif (
@@ -330,22 +331,22 @@ class PregelRunner:
                 else:
                     done_for_stop.add(fut)
             else:
-                # remove references to loop vars
+                # 移除对循环变量的引用。
                 del fut, task
-            # maybe stop other tasks
+            # 按需停止其他任务。
             if _should_stop_others(
                 done_for_stop, handled_exception_ids=self._handled_exception_ids
             ):
                 break
-            # give control back to the caller
+            # 将控制权交还调用方。
             yield
-        # wait for done callbacks
+        # 等待完成回调执行完毕。
         futures.event.wait(
             timeout=(max(0, end_time - time.monotonic()) if end_time else None)
         )
-        # give control back to the caller
+        # 将控制权交还调用方。
         yield
-        # panic on failure or timeout
+        # 失败或超时时传播异常。
         try:
             _panic_or_proceed(
                 futures.done.union(f for f, t in futures.items() if t is not None),
@@ -390,9 +391,9 @@ class PregelRunner:
             ),
             future_type=asyncio.Future,
         )
-        # give control back to the caller
+        # 将控制权交还调用方。
         yield
-        # fast path if single task with no waiter and no timeout
+        # 仅有一个任务且没有等待者或超时时，使用快速路径。
         if len(tasks) == 0:
             return
         elif len(tasks) == 1 and get_waiter is None and timeout is None:
@@ -430,13 +431,13 @@ class PregelRunner:
                         scheduled_error_handler = True
                 if reraise and futures:
                     if id(exc) not in self._handled_exception_ids:
-                        # will be re-raised after futures are done
+                        # 待所有 Future 完成后重新抛出。
                         fut: asyncio.Future = loop.create_future()
                         fut.set_exception(exc)
                         futures.done.add(fut)
                         futures.failed.add(fut)
                 elif reraise and id(exc) not in self._handled_exception_ids:
-                    # let the caller stream this task's result before it raises
+                    # 抛出异常前，先让调用方流式输出此任务结果。
                     yield
                     if tb := exc.__traceback__:
                         while tb.tb_next is not None and any(
@@ -447,15 +448,15 @@ class PregelRunner:
                         exc.__traceback__ = tb
                     raise
             if not futures and not scheduled_error_handler:
-                # maybe `t` scheduled another task
+                # t 可能调度了另一个任务。
                 return
             else:
                 if not scheduled_error_handler:
-                    tasks = ()  # don't reschedule this task
-        # add waiter task if requested
+                    tasks = ()  # 不重复调度此任务。
+        # 按需添加等待任务。
         if get_waiter is not None:
             futures[get_waiter()] = None
-        # schedule tasks
+        # 调度任务。
         for t in tasks:
             fut = cast(
                 asyncio.Future,
@@ -482,9 +483,9 @@ class PregelRunner:
                 ),
             )
             futures[fut] = t
-        # execute tasks, and wait for one to fail or all to finish.
-        # each task is independent from all other concurrent tasks
-        # yield updates/debug output as each task finishes
+        # 执行任务，等待任一失败或全部完成。
+        # 每个任务都独立于其他并发任务。
+        # 各任务完成时，逐一输出更新和调试信息。
         end_time = timeout + loop.time() if timeout else None
         handled_futures: set[asyncio.Future[Any]] = set()
         while len(futures) > (1 if get_waiter is not None else 0):
@@ -494,12 +495,12 @@ class PregelRunner:
                 timeout=(max(0, end_time - loop.time()) if end_time else None),
             )
             if not done:
-                break  # timed out
+                break  # 已超时。
             done_for_stop: set[asyncio.Future[Any]] = set()
             for fut in done:
                 task = futures.pop(fut)
                 if task is None:
-                    # waiter task finished, schedule another
+                    # 等待任务已完成，再调度一个等待任务。
                     if inflight and get_waiter is not None:
                         futures[get_waiter()] = None
                 elif (
@@ -542,26 +543,26 @@ class PregelRunner:
                 else:
                     done_for_stop.add(fut)
             else:
-                # remove references to loop vars
+                # 移除对循环变量的引用。
                 del fut, task
-            # maybe stop other tasks
+            # 按需停止其他任务。
             if _should_stop_others(
                 done_for_stop, handled_exception_ids=self._handled_exception_ids
             ):
                 break
-            # give control back to the caller
+            # 将控制权交还调用方。
             yield
-        # wait for done callbacks
+        # 等待完成回调执行完毕。
         await asyncio.wait_for(
             futures.event.wait(),
             timeout=(max(0, end_time - loop.time()) if end_time else None),
         )
-        # give control back to the caller
+        # 将控制权交还调用方。
         yield
-        # cancel waiter task
+        # 取消等待任务。
         for fut in futures:
             fut.cancel()
-        # panic on failure or timeout
+        # 失败或超时时传播异常。
         try:
             _panic_or_proceed(
                 futures.done.union(f for f, t in futures.items() if t is not None),
@@ -586,23 +587,23 @@ class PregelRunner:
         exception: BaseException | None,
     ) -> None:
         if isinstance(exception, asyncio.CancelledError):
-            # for cancelled tasks, also save error in task,
-            # so loop can finish super-step
+            # 任务被取消时，也要将错误保存到任务中，
+            # 使循环能够完成当前超步。
             task.writes.append((ERROR, exception))
             self.put_writes()(task.id, task.writes)  # type: ignore[misc]
         elif exception:
             if isinstance(exception, GraphInterrupt):
-                # save interrupt to checkpointer
+                # 将中断保存到检查点存储器。
                 if exception.args[0]:
                     writes = [(INTERRUPT, exception.args[0])]
                     if resumes := [w for w in task.writes if w[0] == RESUME]:
                         writes.extend(resumes)
                     self.put_writes()(task.id, writes)  # type: ignore[misc]
             elif isinstance(exception, GraphBubbleUp):
-                # exception will be raised in _panic_or_proceed
+                # 异常会在 _panic_or_proceed 中抛出。
                 pass
             else:
-                # save error to checkpointer
+                # 将错误保存到检查点存储器。
                 task.writes.append((ERROR, exception))
                 if self._should_route_to_error_handler(task) and not isinstance(
                     exception, GraphBubbleUp
@@ -616,10 +617,10 @@ class PregelRunner:
             ):
                 self.node_finished(task.name)
             if all(chan in CONTROL_WRITES for chan, _ in task.writes):
-                # record that the task finished, even if it produced no output
-                # (see `langgraph.pregel._task_status`)
+                # 即使没有输出，也记录任务已完成，
+                # 参见 langgraph.pregel._task_status。
                 task.writes.append((NO_WRITES, None))
-            # save task writes to checkpointer
+            # 将任务写入保存到检查点存储器。
             self.put_writes()(task.id, task.writes)  # type: ignore[misc]
 
 
@@ -628,12 +629,10 @@ def _should_stop_others(
     *,
     handled_exception_ids: set[int] | None = None,
 ) -> bool:
-    """Check if any task failed, if so, cancel all other tasks.
-    GraphInterrupts are not considered failures.
+    """检查是否有任务失败；若有则取消其余任务。
 
-    Neither is an invalid resume value: it's raised once the other tasks finish, so a
-    task answered in the same resume isn't cut off after its side effects and then run
-    again with its saved answer."""
+    `GraphInterrupt` 不视为失败。无效的恢复值也不视为失败：等待其他任务完成后再抛出，避免同次恢复中已被回答的任务在产生副作用后被截断，随后又使用已保存的回答重新运行。
+    """
     for fut in done:
         if fut.cancelled():
             continue
@@ -652,7 +651,7 @@ def _should_stop_others(
 def _exception(
     fut: concurrent.futures.Future[Any] | asyncio.Future[Any],
 ) -> BaseException | None:
-    """Return the exception from a future, without raising CancelledError."""
+    """获取 Future 的异常，且不抛出 CancelledError。"""
     if fut.cancelled():
         if isinstance(fut, asyncio.Future):
             return asyncio.CancelledError()
@@ -671,7 +670,7 @@ def _panic_or_proceed(
     handled_futures: Collection[concurrent.futures.Future[Any] | asyncio.Future[Any]]
     | None = None,
 ) -> None:
-    """Cancel remaining tasks if any failed, re-raise exception if panic is True."""
+    """有任务失败时取消其余任务；panic 为 True 时重新抛出异常。"""
     done: set[concurrent.futures.Future[Any] | asyncio.Future[Any]] = set()
     inflight: set[concurrent.futures.Future[Any] | asyncio.Future[Any]] = set()
     for fut in futs:
@@ -683,32 +682,32 @@ def _panic_or_proceed(
             inflight.add(fut)
     interrupts: list[GraphInterrupt] = []
     while done:
-        # if any task failed
+        # 如果有任务失败。
         fut = done.pop()
         if exc := _exception(fut):
             if fut in (handled_futures or set()):
                 continue
             if id(exc) in (handled_exception_ids or set()):
                 continue
-            # cancel all pending tasks
+            # 取消全部待完成任务。
             while inflight:
                 inflight.pop().cancel()
-            # raise the exception
+            # 抛出异常。
             if panic:
                 if isinstance(exc, GraphInterrupt):
-                    # collect interrupts
+                    # 收集中断。
                     interrupts.append(exc)
                 elif fut not in SKIP_RERAISE_SET:
                     raise exc
-    # raise combined interrupts
+    # 抛出合并后的中断。
     if interrupts:
         raise GraphInterrupt(tuple(i for exc in interrupts for i in exc.args[0]))
     if inflight:
-        # if we got here means we timed out
+        # 执行到此处说明已超时。
         while inflight:
-            # cancel all pending tasks
+            # 取消全部待完成任务。
             inflight.pop().cancel()
-        # raise timeout error
+        # 抛出超时错误。
         raise timeout_exc_cls("Timed out")
 
 
@@ -731,9 +730,9 @@ def _call(
         raise RuntimeError("In an sync context async tasks cannot be called")
 
     fut: concurrent.futures.Future | None = None
-    # schedule PUSH tasks, collect futures
+    # 调度 PUSH 任务并收集 Future。
     scratchpad: PregelScratchpad = task().config[CONF][CONFIG_KEY_SCRATCHPAD]  # type: ignore[union-attr]
-    # schedule the next task, if the callback returns one
+    # 回调返回新任务时，调度该任务。
     if next_task := schedule_task(
         task(),  # type: ignore[arg-type]
         scratchpad.call_counter(),
@@ -754,11 +753,11 @@ def _call(
             ),
             None,
         ):
-            # if the parent task was retried,
-            # the next task might already be running
+            # 若父任务已重试，
+            # 下一个任务可能已经在运行。
             pass
         elif next_task.writes:
-            # if it already ran, return the result
+            # 若已执行完成，则返回结果。
             fut = concurrent.futures.Future()
             ret = next((v for c, v in next_task.writes if c == RETURN), MISSING)
             if ret is not MISSING:
@@ -770,7 +769,7 @@ def _call(
             else:
                 fut.set_result(None)
         else:
-            # schedule the next task
+            # 调度下一个任务。
             fut = submit()(  # type: ignore[misc]
                 run_with_retry,
                 next_task,
@@ -787,17 +786,17 @@ def _call(
                     ),
                 },
                 __reraise_on_exit__=False,
-                # starting a new task in the next tick ensures
-                # updates from this tick are committed/streamed first
+                # 下一次 tick 再启动新任务，确保本次 tick 的更新
+                # 先完成提交和流式输出。
                 __next_tick__=True,
             )
-            # exceptions for call() tasks are raised into the parent task
-            # so we should not re-raise at the end of the tick
+            # call() 任务的异常会抛入父任务，
+            # 因此不应在 tick 末尾再次抛出。
             SKIP_RERAISE_SET.add(fut)
             futures()[fut] = next_task  # type: ignore[index]
     fut = cast(asyncio.Future | concurrent.futures.Future, fut)
-    # return a chained future to ensure commit() callback is called
-    # before the returned future is resolved, to ensure stream order etc
+    # 返回链式 Future，确保返回的 Future 完成前
+    # 先调用 commit() 回调，以保证流式事件顺序等约束。
     return chain_future(fut, concurrent.futures.Future())
 
 
@@ -810,7 +809,7 @@ def _acall(
     cache_policy: CachePolicy | None = None,
     timeout: TimeoutPolicy | None = None,
     callbacks: Callbacks = None,
-    # injected dependencies
+    # 注入的依赖。
     futures: weakref.ref[FuturesDict],
     schedule_task: Callable[
         [PregelExecutableTask, int, Call | None],
@@ -820,20 +819,20 @@ def _acall(
     loop: asyncio.AbstractEventLoop,
     stream: bool = False,
 ) -> asyncio.Future[Any] | concurrent.futures.Future[Any]:
-    # return a chained future to ensure commit() callback is called
-    # before the returned future is resolved, to ensure stream order etc
+    # 返回链式 Future，确保返回的 Future 完成前
+    # 先调用 commit() 回调，以保证流式事件顺序等约束。
     try:
         in_async = asyncio.current_task() is not None
     except RuntimeError:
         in_async = False
-    # if in async context return an async future, otherwise return a sync future
+    # 异步上下文返回异步 Future，否则返回同步 Future。
     if in_async:
         fut: asyncio.Future[Any] | concurrent.futures.Future[Any] = asyncio.Future(
             loop=loop
         )
     else:
         fut = concurrent.futures.Future()
-    # schedule the next task
+    # 调度下一个任务。
     run_coroutine_threadsafe(
         _acall_impl(
             fut,
@@ -866,7 +865,7 @@ async def _acall_impl(
     cache_policy: CachePolicy | None = None,
     timeout: TimeoutPolicy | None = None,
     callbacks: Callbacks = None,
-    # injected dependencies
+    # 注入的依赖。
     futures: weakref.ref[FuturesDict[asyncio.Future, asyncio.Event]],
     schedule_task: Callable[
         [PregelExecutableTask, int, Call | None],
@@ -878,9 +877,9 @@ async def _acall_impl(
 ) -> None:
     try:
         fut: asyncio.Future | None = None
-        # schedule PUSH tasks, collect futures
+        # 调度 PUSH 任务并收集 Future。
         scratchpad: PregelScratchpad = task().config[CONF][CONFIG_KEY_SCRATCHPAD]  # type: ignore[union-attr]
-        # schedule the next task, if the callback returns one
+        # 回调返回新任务时，调度该任务。
         if next_task := await schedule_task(
             task(),  # type: ignore[arg-type]
             scratchpad.call_counter(),
@@ -901,11 +900,11 @@ async def _acall_impl(
                 ),
                 None,
             ):
-                # if the parent task was retried,
-                # the next task might already be running
+                # 若父任务已重试，
+                # 下一个任务可能已经在运行。
                 pass
             elif next_task.writes:
-                # if it already ran, return the result
+                # 若已执行完成，则返回结果。
                 fut = asyncio.Future(loop=loop)
                 ret = next((v for c, v in next_task.writes if c == RETURN), MISSING)
                 if ret is not MISSING:
@@ -917,7 +916,7 @@ async def _acall_impl(
                 else:
                     fut.set_result(None)
             else:
-                # schedule the next task
+                # 调度下一个任务。
                 fut = cast(
                     asyncio.Future,
                     submit()(  # type: ignore[misc]
@@ -939,13 +938,13 @@ async def _acall_impl(
                         __name__=next_task.name,
                         __cancel_on_exit__=True,
                         __reraise_on_exit__=False,
-                        # starting a new task in the next tick ensures
-                        # updates from this tick are committed/streamed first
+                        # 下一次 tick 再启动新任务，确保本次 tick 的更新
+                        # 先完成提交和流式输出。
                         __next_tick__=True,
                     ),
                 )
-                # exceptions for call() tasks are raised into the parent task
-                # so we should not re-raise at the end of the tick
+                # call() 任务的异常会抛入父任务，
+                # 因此不应在 tick 末尾再次抛出。
                 SKIP_RERAISE_SET.add(fut)
                 futures()[fut] = next_task  # type: ignore[index]
         if fut is not None:

@@ -101,7 +101,7 @@ _DEFAULT_ERROR_HANDLER_NODE = "__default_error_handler__"
 
 @dataclass(slots=True)
 class _NodeDefaults:
-    """Default node policies applied to every node at compile time."""
+    """编译时应用于所有节点的默认策略。"""
 
     retry_policy: RetryPolicy | Sequence[RetryPolicy] | None = None
     cache_policy: CachePolicy | None = None
@@ -129,34 +129,25 @@ def _get_node_name(node: StateNode[Any, ContextT]) -> str:
 
 
 class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
-    """A graph whose nodes communicate by reading and writing to a shared state.
+    """节点通过读写共享状态进行通信的图。
 
-    The signature of each node is `State -> Partial<State>`.
-
-    Each state key can optionally be annotated with a reducer function that
-    will be used to aggregate the values of that key received from multiple nodes.
-    The signature of a reducer function is `(Value, Value) -> Value`.
+    节点签名为 `State -> Partial<State>`。每个状态键都可用归约函数注解，以合并多个节点对该键的更新；归约函数签名为 `(Value, Value) -> Value`。
 
     !!! warning
 
-        `StateGraph` is a builder class and cannot be used directly for execution.
-        You must first call `.compile()` to create an executable graph that supports
-        methods like `invoke()`, `stream()`, `astream()`, and `ainvoke()`. See the
-        `CompiledStateGraph` documentation for more details.
+        `StateGraph` 是构建器，须先调用 `.compile()` 生成可执行图，再使用 `invoke()`、`stream()`、`astream()` 或 `ainvoke()`。详见 `CompiledStateGraph`。
 
     Args:
-        state_schema: The schema class that defines the state.
-        context_schema: The schema class that defines the runtime context.
+        state_schema: 定义状态的结构类。
+        context_schema: 定义运行时上下文的结构类，用于向节点提供 `user_id`、`db_conn` 等不可变上下文数据。
+        input_schema: 定义图输入的结构类。
+        output_schema: 定义图输出的结构类。
 
-            Use this to expose immutable context data to your nodes, like `user_id`, `db_conn`, etc.
-        input_schema: The schema class that defines the input to the graph.
-        output_schema: The schema class that defines the output from the graph.
+    !!! warning "`config_schema` 已弃用"
 
-    !!! warning "`config_schema` Deprecated"
-        The `config_schema` parameter is deprecated in v0.6.0 and support will be removed in v2.0.0.
-        Please use `context_schema` instead to specify the schema for run-scoped context.
+        `config_schema` 自 v0.6.0 起弃用，将在 v2.0.0 中移除。请使用 `context_schema` 指定一次运行范围内的上下文结构。
 
-    Example:
+    Examples:
         ```python
         from langchain_core.runnables import RunnableConfig
         from typing_extensions import Annotated, TypedDict
@@ -277,38 +268,20 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
         error_handler: StateNode[Any, ContextT] | None = None,
         timeout: float | timedelta | TimeoutPolicy | None = None,
     ) -> Self:
-        """Set default node policies that apply to every node in this graph.
+        """设置此图所有节点的默认策略。
 
-        Per-node values passed to `add_node` always take precedence over these
-        defaults. Defaults are applied at `compile()` time. Policies set here
-        are **not** inherited by subgraphs.
-
-        `retry_policy` and `timeout` defaults apply to **all** nodes,
-        including error-handler nodes. `cache_policy` and `error_handler`
-        defaults only apply to regular nodes -- caching error-handler results
-        is unsafe, and handlers must never catch themselves.
+        `add_node` 显式指定的策略优先；默认值在 `compile()` 时应用，不会被子图继承。`retry_policy` 和 `timeout` 对包括错误处理节点在内的所有节点生效；`cache_policy` 和 `error_handler` 仅作用于普通节点，因为缓存错误处理结果不安全，处理器也不能捕获自身错误。
 
         Args:
-            retry_policy: Default retry policy for nodes that don't specify
-                their own via `add_node(..., retry_policy=...)`. Also applies
-                to error-handler nodes.
-            cache_policy: Default cache policy for nodes that don't specify
-                their own via `add_node(..., cache_policy=...)`. Does **not**
-                apply to error-handler nodes.
-            error_handler: Default error handler invoked when any regular node
-                raises and does not have its own `error_handler` set via
-                `add_node`. The handler is **not** invoked when an
-                error-handler node itself raises -- handler failures fail the
-                run.
-            timeout: Default timeout policy for nodes that don't specify their
-                own via `add_node(..., timeout=...)`. Also applies to
-                error-handler nodes. Accepts a `TimeoutPolicy`, a number of
-                seconds (`float`), or a `timedelta`.
+            retry_policy: 未自行指定重试策略的节点使用此策略，也适用于错误处理节点。
+            cache_policy: 普通节点未自行指定缓存策略时使用此策略，不用于错误处理节点。
+            error_handler: 普通节点抛出异常且未单独配置处理器时调用。错误处理节点自身失败会使本次运行失败，不会再次调用处理器。
+            timeout: 未自行指定超时时使用的默认策略，也适用于错误处理节点；可为 `TimeoutPolicy`、以秒计的 `float` 或 `timedelta`。
 
         Returns:
-            Self: The builder instance, for chaining.
+            Self: 构建器实例，支持链式调用。
 
-        Example:
+        Examples:
             ```python
             graph = (
                 StateGraph(State)
@@ -388,32 +361,27 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
         trace_policy: TracePolicy | None = None,
         **kwargs: Unpack[DeprecatedKwargs],
     ) -> Self:
-        """Add a new node to the `StateGraph`, input schema is inferred as the state schema.
+        """向 `StateGraph` 添加节点，默认以图状态结构作为输入结构。
 
-        Will take the name of the function/runnable as the node name.
+        使用函数或 Runnable 的名称作为节点名。
 
         Args:
-            node: The function or runnable this node will run.
-            defer: Whether to defer the execution of the node until the run is about to end.
-            metadata: The metadata associated with the node.
-            input_schema: The input schema for the node. (Default: the graph's state schema)
-            retry_policy: The retry policy for the node.
-
-                If a sequence is provided, the first matching policy will be applied.
-            cache_policy: The cache policy for the node.
-            destinations: Destinations that indicate where a node can route to.
-
-                Useful for edgeless graphs with nodes that return `Command` objects.
-
-                If a `dict` is provided, the keys will be used as the target node names and the values will be used as the labels for the edges.
-
-                If a `tuple` is provided, the values will be used as the target node names.
+            node: 节点要执行的函数或 Runnable。
+            defer: 是否将节点推迟到本次运行即将结束时执行。
+            metadata: 节点关联的元数据。
+            input_schema: 节点输入结构，默认为图状态结构。
+            retry_policy: 节点重试策略；传入策略序列时使用第一个匹配项。
+            cache_policy: 节点缓存策略。
+            destinations: 可能的路由目标，适用于返回 `Command` 的无显式边图。字典的键为目标节点名、值为边标签；元组中的值为目标节点名。
 
                 !!! warning
 
-                    This is only used for graph rendering and doesn't have any effect on the graph execution.
+                    此项仅用于图的可视化，不影响执行。
 
-        Example:
+        Returns:
+            Self: 当前 `StateGraph` 实例，支持链式调用。
+
+        Examples:
             ```python
             from typing_extensions import TypedDict
 
@@ -436,9 +404,6 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
             graph.invoke({"x": 1})
             # {'x': 2}
             ```
-
-        Returns:
-            Self: The instance of the `StateGraph`, allowing for method chaining.
         """
         ...
 
@@ -458,32 +423,27 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
         trace_policy: TracePolicy | None = None,
         **kwargs: Unpack[DeprecatedKwargs],
     ) -> Self:
-        """Add a new node to the `StateGraph` where input schema is specified.
+        """向 `StateGraph` 添加显式指定输入结构的节点。
 
-        Will take the name of the function/runnable as the node name.
+        使用函数或 Runnable 的名称作为节点名。
 
         Args:
-            node: The function or runnable this node will run.
-            defer: Whether to defer the execution of the node until the run is about to end.
-            metadata: The metadata associated with the node.
-            input_schema: The input schema for the node.
-            retry_policy: The retry policy for the node.
-
-                If a sequence is provided, the first matching policy will be applied.
-            cache_policy: The cache policy for the node.
-            destinations: Destinations that indicate where a node can route to.
-
-                Useful for edgeless graphs with nodes that return `Command` objects.
-
-                If a `dict` is provided, the keys will be used as the target node names and the values will be used as the labels for the edges.
-
-                If a `tuple` is provided, the values will be used as the target node names.
+            node: 节点要执行的函数或 Runnable。
+            defer: 是否推迟到本次运行即将结束时执行。
+            metadata: 节点元数据。
+            input_schema: 节点输入结构。
+            retry_policy: 重试策略；传入策略序列时使用第一个匹配项。
+            cache_policy: 缓存策略。
+            destinations: 返回 `Command` 的无显式边图可声明路由目标。字典的键为目标节点名、值为边标签；元组的值为目标节点名。
 
                 !!! warning
 
-                    This is only used for graph rendering and doesn't have any effect on the graph execution.
+                    此项仅用于图的可视化，不影响执行。
 
-        Example:
+        Returns:
+            Self: 当前 `StateGraph` 实例，支持链式调用。
+
+        Examples:
             ```python
             from typing_extensions import TypedDict
 
@@ -510,9 +470,6 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
             graph.invoke({"x": 1})
             # {'x': 2}
             ```
-
-        Returns:
-            Self: The instance of the `StateGraph`, allowing for method chaining.
         """
         ...
 
@@ -533,31 +490,26 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
         trace_policy: TracePolicy | None = None,
         **kwargs: Unpack[DeprecatedKwargs],
     ) -> Self:
-        """Add a new node to the `StateGraph`, input schema is inferred as the state schema.
+        """向 `StateGraph` 添加节点，默认以图状态结构作为输入结构。
 
         Args:
-            node: The name of the node.
-            action: The function or runnable this node will run.
-            defer: Whether to defer the execution of the node until the run is about to end.
-            metadata: The metadata associated with the node.
-            input_schema: The input schema for the node. (Default: the graph's state schema)
-            retry_policy: The retry policy for the node.
-
-                If a sequence is provided, the first matching policy will be applied.
-            cache_policy: The cache policy for the node.
-            destinations: Destinations that indicate where a node can route to.
-
-                Useful for edgeless graphs with nodes that return `Command` objects.
-
-                If a `dict` is provided, the keys will be used as the target node names and the values will be used as the labels for the edges.
-
-                If a `tuple` is provided, the values will be used as the target node names.
+            node: 节点名称。
+            action: 节点要执行的函数或 Runnable。
+            defer: 是否推迟到本次运行即将结束时执行。
+            metadata: 节点元数据。
+            input_schema: 节点输入结构，默认为图状态结构。
+            retry_policy: 重试策略；传入策略序列时使用第一个匹配项。
+            cache_policy: 缓存策略。
+            destinations: 返回 `Command` 的无显式边图可声明路由目标。字典的键为目标节点名、值为边标签；元组的值为目标节点名。
 
                 !!! warning
 
-                    This is only used for graph rendering and doesn't have any effect on the graph execution.
+                    此项仅用于图的可视化，不影响执行。
 
-        Example:
+        Returns:
+            Self: 当前 `StateGraph` 实例，支持链式调用。
+
+        Examples:
             ```python
             from typing_extensions import TypedDict
 
@@ -580,9 +532,6 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
             graph.invoke({"x": 1})
             # {'x': 2}
             ```
-
-        Returns:
-            Self: The instance of the `StateGraph`, allowing for method chaining.
         """
         ...
 
@@ -603,35 +552,26 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
         trace_policy: TracePolicy | None = None,
         **kwargs: Unpack[DeprecatedKwargs],
     ) -> Self:
-        """Add a new node to the `StateGraph`, input schema is specified.
+        """向 `StateGraph` 添加显式指定输入结构的节点。
 
         Args:
-            node: The function or runnable this node will run.
-
-                If a string is provided, it will be used as the node name, and action will be used as the function or runnable.
-            action: The action associated with the node.
-
-                Will be used as the node function or runnable if `node` is a string (node name).
-            defer: Whether to defer the execution of the node until the run is about to end.
-            metadata: The metadata associated with the node.
-            input_schema: The input schema for the node.
-            retry_policy: The retry policy for the node.
-
-                If a sequence is provided, the first matching policy will be applied.
-            cache_policy: The cache policy for the node.
-            destinations: Destinations that indicate where a node can route to.
-
-                Useful for edgeless graphs with nodes that return `Command` objects.
-
-                If a `dict` is provided, the keys will be used as the target node names and the values will be used as the labels for the edges.
-
-                If a `tuple` is provided, the values will be used as the target node names.
+            node: 函数或 Runnable；若为字符串，则作为节点名，并使用 `action` 作为执行对象。
+            action: 节点执行对象；当 `node` 是节点名字符串时，作为节点函数或 Runnable。
+            defer: 是否推迟到本次运行即将结束时执行。
+            metadata: 节点元数据。
+            input_schema: 节点输入结构。
+            retry_policy: 重试策略；传入策略序列时使用第一个匹配项。
+            cache_policy: 缓存策略。
+            destinations: 返回 `Command` 的无显式边图可声明路由目标。字典的键为目标节点名、值为边标签；元组的值为目标节点名。
 
                 !!! warning
 
-                    This is only used for graph rendering and doesn't have any effect on the graph execution.
+                    此项仅用于图的可视化，不影响执行。
 
-        Example:
+        Returns:
+            Self: 当前 `StateGraph` 实例，支持链式调用。
+
+        Examples:
             ```python
             from typing_extensions import TypedDict
 
@@ -658,9 +598,6 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
             graph.invoke({"x": 1})
             # {'x': 2}
             ```
-
-        Returns:
-            Self: The instance of the `StateGraph`, allowing for method chaining.
         """
         ...
 
@@ -680,48 +617,30 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
         trace_policy: TracePolicy | None = None,
         **kwargs: Unpack[DeprecatedKwargs],
     ) -> Self:
-        """Add a new node to the `StateGraph`.
+        """向 `StateGraph` 添加节点。
 
         Args:
-            node: The function or runnable this node will run.
-
-                If a string is provided, it will be used as the node name, and action will be used as the function or runnable.
-            action: The action associated with the node.
-
-                Will be used as the node function or runnable if `node` is a string (node name).
-            defer: Whether to defer the execution of the node until the run is about to end.
-            metadata: The metadata associated with the node.
-            input_schema: The input schema for the node. (Default: the graph's state schema)
-            retry_policy: The retry policy for the node.
-
-                If a sequence is provided, the first matching policy will be applied.
-            cache_policy: The cache policy for the node.
-            error_handler: Optional node-level error handler callable for this node.
-            trace_policy: Optional policy controlling how this node's run is traced. Its
-                `process_inputs` callable transforms the node's input before it is
-                recorded (e.g. to omit or summarize large message history) without
-                changing the value passed to the node. Does not affect execution.
-            destinations: Destinations that indicate where a node can route to.
-
-                Useful for edgeless graphs with nodes that return `Command` objects.
-
-                If a `dict` is provided, the keys will be used as the target node names and the values will be used as the labels for the edges.
-
-                If a `tuple` is provided, the values will be used as the target node names.
+            node: 函数或 Runnable；若为字符串，则作为节点名，并使用 `action` 作为执行对象。
+            action: 当 `node` 是节点名字符串时，作为节点函数或 Runnable。
+            defer: 是否推迟到本次运行即将结束时执行。
+            metadata: 节点元数据。
+            input_schema: 节点输入结构，默认为图状态结构。
+            retry_policy: 重试策略；传入策略序列时使用第一个匹配项。
+            cache_policy: 缓存策略。
+            error_handler: 可选的节点级错误处理函数。
+            trace_policy: 可选追踪策略。`process_inputs` 在记录输入前进行转换，例如省略或概括较长消息历史；不改变实际传入节点的值，也不影响执行。
+            destinations: 返回 `Command` 的无显式边图可声明路由目标。字典的键为目标节点名、值为边标签；元组的值为目标节点名。
 
                 !!! warning
 
-                    This is only used for graph rendering and doesn't have any effect on the graph execution.
-            timeout: Timeout for each node attempt. A number or `timedelta` is
-                a hard wall-clock cap and is not refreshed. Use `TimeoutPolicy`
-                to configure both a wall-clock `run_timeout` and an
-                `idle_timeout` refreshed by progress signals. When exceeded, a
-                [`NodeTimeoutError`][langgraph.errors.NodeTimeoutError] is raised
-                and the retry policy (if any) decides whether to retry. Timeouts
-                are supported only for async nodes; sync nodes cannot be safely
-                cancelled in-process.
+                    此项仅用于图的可视化，不影响执行。
 
-        Example:
+            timeout: 每次节点尝试的超时。数字或 `timedelta` 表示不随进度刷新的总时长上限；`TimeoutPolicy` 可同时设置总时长 `run_timeout` 和由进度信号刷新的 `idle_timeout`。超时抛出 [`NodeTimeoutError`][langgraph.errors.NodeTimeoutError]，再由重试策略决定是否重试。仅异步节点支持超时，因为无法在进程内安全取消同步节点。
+
+        Returns:
+            Self: 当前 `StateGraph` 实例，支持链式调用。下方示例分别展示默认命名和自定义节点名。
+
+        Examples:
             ```python
             from typing_extensions import TypedDict
 
@@ -745,7 +664,6 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
             # {'x': 2}
             ```
 
-        Example: Customize the name:
             ```python
             builder = StateGraph(State)
             builder.add_node("my_fair_node", my_node)
@@ -754,9 +672,6 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
             graph.invoke({"x": 1})
             # {'x': 2}
             ```
-
-        Returns:
-            Self: The instance of the `StateGraph`, allowing for method chaining.
         """
         if (retry := kwargs.get("retry", MISSING)) is not MISSING:
             warnings.warn(
@@ -834,11 +749,11 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
                         if isinstance(input_hint, type) and get_type_hints(input_hint):
                             inferred_input_schema = input_hint
                 if rtn := hints.get("return"):
-                    # Handle Union types
+                    # 处理 Union 类型。
                     rtn_origin = get_origin(rtn)
                     if rtn_origin is Union:
                         rtn_args = get_args(rtn)
-                        # Look for Command in the union
+                        # 在联合类型中查找 Command。
                         for arg in rtn_args:
                             arg_origin = get_origin(arg)
                             if arg_origin is Command:
@@ -846,7 +761,7 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
                                 rtn_origin = arg_origin
                                 break
 
-                    # Check if it's a Command type
+                    # 检查是否为 Command 类型。
                     if (
                         rtn_origin is Command
                         and (rargs := get_args(rtn))
@@ -926,21 +841,19 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
         return self
 
     def add_edge(self, start_key: str | list[str], end_key: str) -> Self:
-        """Add a directed edge from the start node (or list of start nodes) to the end node.
+        """从起始节点或起始节点列表向目标节点添加有向边。
 
-        When a single start node is provided, the graph will wait for that node to complete
-        before executing the end node. When multiple start nodes are provided,
-        the graph will wait for ALL of the start nodes to complete before executing the end node.
+        单一起点完成后即可执行目标；多个起点时，必须等所有起始节点完成。
 
         Args:
-            start_key: The key(s) of the start node(s) of the edge.
-            end_key: The key of the end node of the edge.
+            start_key: 起始节点名或节点名列表。
+            end_key: 目标节点名。
 
         Raises:
-            ValueError: If the start key is `'END'` or if the start key or end key is not present in the graph.
+            ValueError: 起始节点为 END，或节点不存在于图中。
 
         Returns:
-            Self: The instance of the `StateGraph`, allowing for method chaining.
+            Self: 当前 `StateGraph` 实例，支持链式调用。
         """
         if self.compiled:
             logger.warning(
@@ -954,7 +867,7 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
             if end_key == START:
                 raise ValueError("START cannot be an end node")
 
-            # run this validation only for non-StateGraph graphs
+            # 仅对非 StateGraph 的图执行此校验。
             if not hasattr(self, "channels") and start_key in set(
                 start for start, _ in self.edges
             ):
@@ -987,27 +900,18 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
         | Runnable[Any, Hashable | Sequence[Hashable]],
         path_map: dict[Hashable, str] | list[str] | None = None,
     ) -> Self:
-        """Add a conditional edge from the starting node to any number of destination nodes.
+        """从起始节点添加可路由到多个目标的条件边。
 
         Args:
-            source: The starting node. This conditional edge will run when
-                exiting this node.
-            path: The callable that determines the next node or nodes.
-
-                If not specifying `path_map` it should return one or more nodes.
-
-                If it returns `'END'`, the graph will stop execution.
-            path_map: Optional mapping of paths to node names.
-
-                If omitted the paths returned by `path` should be node names.
+            source: 起始节点；完成后执行条件判断。
+            path: 决定后续节点的可调用对象；未指定 `path_map` 时应返回一个或多个节点名，返回 END 时停止执行。
+            path_map: 可选的路径值到节点名映射；省略时 `path` 返回值应直接是节点名。
 
         Returns:
-            Self: The instance of the graph, allowing for method chaining.
+            Self: 当前图实例，支持链式调用。
 
-        !!! warning
-            Without type hints on the `path` function's return value (e.g., `-> Literal["foo", "__end__"]:`)
-            or a path_map, the graph visualization assumes the edge could transition to any node in the graph.
-
+        Note:
+            若 `path` 没有返回类型提示（例如 `Literal["foo", "__end__"]`），且未提供 `path_map`，可视化会假定此边可能到达图中任意节点。
         """
         if self.compiled:
             logger.warning(
@@ -1015,15 +919,15 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
                 "not be reflected in the compiled graph."
             )
 
-        # find a name for the condition
+        # 为条件确定名称。
         path = coerce_to_runnable(path, name=None, trace=True)
         name = path.name or "condition"
-        # validate the condition
+        # 校验条件。
         if name in self.branches[source]:
             raise ValueError(
                 f"Branch with name `{path.name}` already exists for node `{source}`"
             )
-        # save it
+        # 保存条件分支。
         self.branches[source][name] = BranchSpec.from_path(path, path_map, True)
         if schema := self.branches[source][name].input_schema:
             self._add_schema(schema)
@@ -1036,21 +940,16 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
             | tuple[str, StateNode[NodeInputT, ContextT]]
         ],
     ) -> Self:
-        """Add a sequence of nodes that will be executed in the provided order.
+        """按给定顺序添加并执行一组节点。
 
         Args:
-            nodes: A sequence of `StateNode` (callables that accept a `state` arg) or `(name, StateNode)` tuples.
-
-                If no names are provided, the name will be inferred from the node object (e.g. a `Runnable` or a `Callable` name).
-
-                Each node will be executed in the order provided.
+            nodes: `StateNode`（接收 `state` 的可调用对象）序列，或 `(name, StateNode)` 元组序列。未提供名称时，从 Runnable 或 Callable 对象推断。节点按传入顺序执行。
 
         Raises:
-            ValueError: If the sequence is empty.
-            ValueError: If the sequence contains duplicate node names.
+            ValueError: 序列为空或存在重复节点名。
 
         Returns:
-            Self: The instance of the `StateGraph`, allowing for method chaining.
+            Self: 当前 `StateGraph` 实例，支持链式调用。
         """
         if len(nodes) < 1:
             raise ValueError("Sequence requires at least one node.")
@@ -1077,15 +976,13 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
         return self
 
     def set_entry_point(self, key: str) -> Self:
-        """Specifies the first node to be called in the graph.
-
-        Equivalent to calling `add_edge(START, key)`.
+        """指定图中第一个执行的节点，等价于 `add_edge(START, key)`。
 
         Parameters:
-            key (str): The key of the node to set as the entry point.
+            key (str): 入口节点名。
 
         Returns:
-            Self: The instance of the graph, allowing for method chaining.
+            Self: 当前图实例，支持链式调用。
         """
         return self.add_edge(START, key)
 
@@ -1096,45 +993,37 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
         | Runnable[Any, Hashable | Sequence[Hashable]],
         path_map: dict[Hashable, str] | list[str] | None = None,
     ) -> Self:
-        """Sets a conditional entry point in the graph.
+        """设置图的条件入口。
 
         Args:
-            path: The callable that determines the next node or nodes.
-
-                If not specifying `path_map` it should return one or more nodes.
-
-                If it returns END, the graph will stop execution.
-            path_map: Optional mapping of paths to node names.
-
-                If omitted the paths returned by `path` should be node names.
+            path: 决定后续节点的可调用对象。未提供 `path_map` 时，应返回一个或多个节点名；返回 END 时停止执行。
+            path_map: 可选的路径值到节点名映射；省略时 `path` 返回值应直接为节点名。
 
         Returns:
-            Self: The instance of the graph, allowing for method chaining.
+            Self: 当前图实例，支持链式调用。
         """
         return self.add_conditional_edges(START, path, path_map)
 
     def set_finish_point(self, key: str) -> Self:
-        """Marks a node as a finish point of the graph.
-
-        If the graph reaches this node, it will cease execution.
+        """将节点标记为图的结束点；执行到该节点后结束。
 
         Parameters:
-            key (str): The key of the node to set as the finish point.
+            key (str): 结束节点名。
 
         Returns:
-            Self: The instance of the graph, allowing for method chaining.
+            Self: 当前图实例，支持链式调用。
         """
         return self.add_edge(key, END)
 
     def validate(self, interrupt: Sequence[str] | None = None) -> Self:
-        # assemble sources
+        # 汇总边的起点。
         all_sources = {src for src, _ in self._all_edges}
         for start, branches in self.branches.items():
             all_sources.add(start)
         for name, spec in self.nodes.items():
             if spec.ends:
                 all_sources.add(name)
-        # validate sources
+        # 校验起点。
         for source in all_sources:
             if source not in self.nodes and source != START:
                 raise ValueError(f"Found edge starting at unknown node '{source}'")
@@ -1144,7 +1033,7 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
                 "Graph must have an entrypoint: add at least one edge from START to another node"
             )
 
-        # assemble targets
+        # 汇总目标节点。
         all_targets = {end for _, end in self._all_edges}
         for start, branches in self.branches.items():
             for cond, branch in branches.items():
@@ -1166,7 +1055,7 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
         for target in all_targets:
             if target not in self.nodes and target != END:
                 raise ValueError(f"Found edge ending at unknown node `{target}`")
-        # validate interrupts
+        # 校验中断配置。
         if interrupt:
             for node in interrupt:
                 if node not in self.nodes:
@@ -1186,47 +1075,26 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
         name: str | None = None,
         transformers: Sequence[Callable[[tuple[str, ...]], Any]] | None = None,
     ) -> CompiledStateGraph[StateT, ContextT, InputT, OutputT]:
-        """Compiles the `StateGraph` into a `CompiledStateGraph` object.
+        """将 `StateGraph` 编译为 `CompiledStateGraph`。
 
-        The compiled graph implements the `Runnable` interface and can be invoked,
-        streamed, batched, and run asynchronously.
+        编译后的图实现 `Runnable` 接口，支持调用、流式输出、批处理和异步执行。
 
         Args:
-            checkpointer: A checkpoint saver object or flag.
+            checkpointer: 检查点存储器对象或控制标志。提供存储器后，图拥有完整版本化的短期记忆，可以暂停、恢复以及从任意位置重放。为 `None` 时，作为子图可继承父图存储器；为 `False` 时，既不使用也不继承存储器。启用后，调用时应在配置中传入 `thread_id`，作为存取检查点的键。独立运行使用唯一 ID；需要在多次调用间累积状态（例如对话记忆）时复用同一 ID。配置示例见下方。
+            interrupt_before: 可选节点名列表，在这些节点执行前中断。
+            interrupt_after: 可选节点名列表，在这些节点执行后中断。
+            debug: 是否启用调试模式。
+            name: 编译后图的名称。
+            transformers: 可选的 `StreamTransformer` 类或已配置工厂序列。在每次调用 `stream_events(version="v3")` / `astream_events(version="v3")` 时按运行创建实例，并传播到子图作用域。自定义工厂应遵循标准构造形式，将 `scope` 作为第一个参数。这些转换器追加在内置流转换器之后。
 
-                If provided, this `Checkpointer` serves as a fully versioned "short-term memory" for the graph,
-                allowing it to be paused, resumed, and replayed from any point.
+        Returns:
+            CompiledStateGraph: 编译后的状态图。
 
-                If `None`, it may inherit the parent graph's checkpointer when used as a subgraph.
-
-                If `False`, it will not use or inherit any checkpointer.
-
-                **Important**: When a checkpointer is enabled, you should pass a `thread_id`
-                in the config when invoking the graph:
-
+        Examples:
                 ```python
                 config = {"configurable": {"thread_id": "my-thread"}}
                 graph.invoke(inputs, config)
                 ```
-
-                The `thread_id` is the key used to store and retrieve checkpoints. Use a
-                unique ID for independent runs, or reuse the same ID to accumulate state
-                across invocations (e.g., for conversation memory).
-
-            interrupt_before: An optional list of node names to interrupt before.
-            interrupt_after: An optional list of node names to interrupt after.
-            debug: A flag indicating whether to enable debug mode.
-            name: The name to use for the compiled graph.
-            transformers: Optional sequence of `StreamTransformer` classes or
-                configured factories. Classes and factories are instantiated
-                per run whenever `stream_events(version="v3")` / `astream_events(version="v3")` is called and are
-                propagated to subgraph scopes. Custom factories should follow
-                the standard `StreamTransformer` constructor shape by
-                accepting `scope` as their first argument. Appended after the
-                built-in stream transformers.
-
-        Returns:
-            CompiledStateGraph: The compiled `StateGraph`.
         """
         checkpointer = ensure_valid_checkpointer(checkpointer)
 
@@ -1253,11 +1121,11 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
                 checkpointer, serde_allowlist
             )
 
-        # assign default values
+        # 设置默认值。
         interrupt_before = interrupt_before or []
         interrupt_after = interrupt_after or []
 
-        # validate the graph
+        # 校验图结构。
         self.validate(
             interrupt=(
                 (interrupt_before if interrupt_before != "*" else []) + interrupt_after
@@ -1266,7 +1134,7 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
             )
         )
 
-        # prepare output channels
+        # 准备输出通道。
         output_channels = (
             "__root__"
             if len(self.schemas[self.output_schema]) == 1
@@ -1284,9 +1152,9 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
                 key for key, val in self.channels.items() if not is_managed_value(val)
             ]
         )
-        # Apply builder defaults to node specs. Per-node values always win.
-        # Error-handler routing and cache_policy are only assigned to regular
-        # nodes. Retry and timeout defaults also apply to error-handler nodes.
+        # 将构建器默认策略应用到节点配置；节点显式设置始终优先。
+        # 错误处理路由和 cache_policy 仅分配给普通节点；
+        # 重试和超时默认值也适用于错误处理节点。
         defaults = self._node_defaults
         default_handler_name: str | None = None
         if defaults.error_handler is not None:
@@ -1309,31 +1177,31 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
                 is_error_handler=True,
             )
 
-        # Apply builder defaults to node specs. Per-node values always win.
+        # 将构建器默认策略应用到节点配置；节点显式设置始终优先。
         for spec in self.nodes.values():
-            # error_handler: regular nodes only — handlers must never
-            # catch themselves or other handlers.
+            # error_handler 仅用于普通节点；处理器绝不能
+            # 捕获自身或其他处理器的错误。
             if (
                 not spec.is_error_handler
                 and default_handler_name is not None
                 and spec.error_handler_node is None
             ):
                 spec.error_handler_node = default_handler_name
-            # retry: all nodes — handlers should be retried on transient
-            # failures just like regular nodes.
+            # retry 适用于所有节点；错误处理节点遇到暂时性故障时
+            # 也应像普通节点一样重试。
             if defaults.retry_policy is not None and spec.retry_policy is None:
                 spec.retry_policy = defaults.retry_policy
-            # cache: regular nodes only — caching an error-handler result
-            # is unsafe because the input (failed-node state) may differ
-            # across failures even when the cache key matches.
+            # cache 仅用于普通节点；即使缓存键相同，
+            # 不同错误中的输入（失败节点的状态）也可能不同，
+            # 因此缓存错误处理结果不安全。
             if (
                 not spec.is_error_handler
                 and defaults.cache_policy is not None
                 and spec.cache_policy is None
             ):
                 spec.cache_policy = defaults.cache_policy
-            # timeout: all nodes — a stuck handler should be cancelled the
-            # same way a stuck regular node would be.
+            # timeout 适用于所有节点；卡住的错误处理节点
+            # 也应像卡住的普通节点一样被取消。
             if defaults.timeout is not None and spec.timeout is None:
                 spec.timeout = defaults.timeout
 
@@ -1374,7 +1242,7 @@ class StateGraph(Generic[StateT, ContextT, InputT, OutputT]):
         for key, node in self.nodes.items():
             compiled.attach_node(key, node)
 
-        # Record output/state mappers for v2 stream coercion (pydantic/dataclass only)
+        # 记录输出和状态映射器，供 v2 流格式转换使用（仅 pydantic/dataclass）。
         compiled._output_mapper = _pick_mapper(
             list(output_channels)
             if isinstance(output_channels, list)
@@ -1452,7 +1320,7 @@ class CompiledStateGraph(
             output_keys = list(self.builder.channels) + [
                 k for k, v in self.builder.managed.items()
             ]
-        # for membership checks, which run on every key of every node update
+        # 用于成员检查；每个节点更新中的每个键都会执行此检查。
         output_key_set = frozenset(output_keys)
 
         def _get_updates(
@@ -1495,7 +1363,7 @@ class CompiledStateGraph(
                 )
                 raise InvalidUpdateError(msg)
 
-        # state updaters
+        # 状态更新器。
         write_entries: tuple[ChannelWriteEntry | ChannelWriteTupleEntry, ...] = (
             ChannelWriteTupleEntry(
                 mapper=_get_root if output_keys == ["__root__"] else _get_updates
@@ -1508,7 +1376,7 @@ class CompiledStateGraph(
             ),
         )
 
-        # add node and output channel
+        # 添加节点及输出通道。
         if key == START:
             self.nodes[key] = PregelNode(
                 tags=[TAG_HIDDEN],
@@ -1534,11 +1402,11 @@ class CompiledStateGraph(
             )
             self.nodes[key] = PregelNode(
                 triggers=[branch_channel],
-                # read state keys and managed values
+                # 读取状态键和托管值。
                 channels=("__root__" if is_single_input else input_channels),
-                # coerce state dict to schema class (eg. pydantic model)
+                # 将状态字典转换为结构类实例，例如 pydantic 模型。
                 mapper=mapper,
-                # publish to state keys
+                # 写入状态键。
                 writers=[ChannelWrite(write_entries)],
                 metadata=node.metadata,
                 retry_policy=node.retry_policy,
@@ -1554,7 +1422,7 @@ class CompiledStateGraph(
 
     def attach_edge(self, starts: str | Sequence[str], end: str) -> None:
         if isinstance(starts, str):
-            # subscribe to start channel
+            # 订阅起始通道。
             if end != END:
                 self.nodes[starts].writers.append(
                     ChannelWrite(
@@ -1563,16 +1431,16 @@ class CompiledStateGraph(
                 )
         elif end != END:
             channel_name = f"join:{'+'.join(starts)}:{end}"
-            # register channel
+            # 注册通道。
             if self.builder.nodes[end].defer:
                 self.channels[channel_name] = NamedBarrierValueAfterFinish(
                     str, set(starts)
                 )
             else:
                 self.channels[channel_name] = NamedBarrierValue(str, set(starts))
-            # subscribe to channel
+            # 订阅通道。
             self.nodes[end].triggers.append(channel_name)
-            # publish to channel
+            # 发布到通道。
             for start in starts:
                 self.nodes[start].writers.append(
                     ChannelWrite((ChannelWriteEntry(channel_name, start),))
@@ -1600,64 +1468,64 @@ class CompiledStateGraph(
             return writes
 
         if with_reader:
-            # get schema
+            # 获取状态结构。
             schema = branch.input_schema or (
                 self.builder.nodes[start].input_schema
                 if start in self.builder.nodes
                 else self.builder.state_schema
             )
             channels = list(self.builder.schemas[schema])
-            # get mapper
+            # 获取映射器。
             if schema in self.schema_to_mapper:
                 mapper = self.schema_to_mapper[schema]
             else:
                 mapper = _pick_mapper(channels, schema)
                 self.schema_to_mapper[schema] = mapper
-            # create reader
+            # 创建读取器。
             reader: Callable[[RunnableConfig], Any] | None = partial(
                 ChannelRead.do_read,
                 select=channels[0] if channels == ["__root__"] else channels,
                 fresh=True,
-                # coerce state dict to schema class (eg. pydantic model)
+                # 将状态字典转换为结构类实例，例如 pydantic 模型。
                 mapper=mapper,
             )
         else:
             reader = None
 
-        # attach branch publisher
+        # 挂载分支发布器。
         self.nodes[start].writers.append(branch.run(get_writes, reader))
 
     def _migrate_checkpoint(self, checkpoint: Checkpoint) -> None:
-        """Migrate a checkpoint to new channel layout."""
+        """将检查点迁移到新的通道布局。"""
         super()._migrate_checkpoint(checkpoint)
 
         values = checkpoint["channel_values"]
         versions = checkpoint["channel_versions"]
         seen = checkpoint["versions_seen"]
 
-        # empty checkpoints do not need migration
+        # 空检查点无需迁移。
         if not versions:
             return
 
-        # current version
+        # 当前版本。
         if checkpoint["v"] >= 3:
             return
 
-        # Migrate from start:node to branch:to:node
+        # 将 start:node 迁移为 branch:to:node。
         for k in list(versions):
             if k.startswith("start:"):
-                # confirm node is present
+                # 确认节点存在。
                 node = k.split(":")[1]
                 if node not in self.nodes:
                     continue
-                # get next version
+                # 获取下一版本。
                 new_k = f"branch:to:{node}"
                 new_v = (
                     max(versions[new_k], versions.pop(k))
                     if new_k in versions
                     else versions.pop(k)
                 )
-                # update seen
+                # 更新已读版本。
                 for ss in (seen.get(node, {}), seen.get(INTERRUPT, {})):
                     if k in ss:
                         s = ss.pop(k)
@@ -1665,27 +1533,27 @@ class CompiledStateGraph(
                             ss[new_k] = max(s, ss[new_k])
                         else:
                             ss[new_k] = s
-                # update value
+                # 更新通道值。
                 if new_k not in values and k in values:
                     values[new_k] = values.pop(k)
-                # update version
+                # 更新通道版本。
                 versions[new_k] = new_v
 
-        # Migrate from branch:source:condition:node to branch:to:node
+        # 将 branch:source:condition:node 迁移为 branch:to:node。
         for k in list(versions):
             if k.startswith("branch:") and k.count(":") == 3:
-                # confirm node is present
+                # 确认节点存在。
                 node = k.split(":")[-1]
                 if node not in self.nodes:
                     continue
-                # get next version
+                # 获取下一版本。
                 new_k = f"branch:to:{node}"
                 new_v = (
                     max(versions[new_k], versions.pop(k))
                     if new_k in versions
                     else versions.pop(k)
                 )
-                # update seen
+                # 更新已读版本。
                 for ss in (seen.get(node, {}), seen.get(INTERRUPT, {})):
                     if k in ss:
                         s = ss.pop(k)
@@ -1693,14 +1561,14 @@ class CompiledStateGraph(
                             ss[new_k] = max(s, ss[new_k])
                         else:
                             ss[new_k] = s
-                # update value
+                # 更新通道值。
                 if new_k not in values and k in values:
                     values[new_k] = values.pop(k)
-                # update version
+                # 更新通道版本。
                 versions[new_k] = new_v
 
         if not set(self.nodes).isdisjoint(versions):
-            # Migrate from "node" to "branch:to:node"
+            # 将 "node" 迁移为 "branch:to:node"。
             source_to_target = defaultdict(list)
             for start, end in self.builder.edges:
                 if start != START and end != END:
@@ -1712,10 +1580,10 @@ class CompiledStateGraph(
                     v = versions.pop(k)
                     c = values.pop(k, MISSING)
                     for end in source_to_target[k]:
-                        # get next version
+                        # 获取下一版本。
                         new_k = f"branch:to:{end}"
                         new_v = max(versions[new_k], v) if new_k in versions else v
-                        # update seen
+                        # 更新已读版本。
                         for ss in (seen.get(end, {}), seen.get(INTERRUPT, {})):
                             if k in ss:
                                 s = ss.pop(k)
@@ -1723,12 +1591,12 @@ class CompiledStateGraph(
                                     ss[new_k] = max(s, ss[new_k])
                                 else:
                                     ss[new_k] = s
-                        # update value
+                        # 更新通道值。
                         if new_k not in values and c is not MISSING:
                             values[new_k] = c
-                        # update version
+                        # 更新通道版本。
                         versions[new_k] = new_v
-                    # pop interrupt seen
+                    # 移除已观察到的中断记录。
                     if INTERRUPT in seen:
                         seen[INTERRUPT].pop(k, MISSING)
 
@@ -1773,8 +1641,8 @@ def _control_branch(value: Any) -> Sequence[tuple[str, Any]]:
             if isinstance(go, Send):
                 rtn.append((TASKS, go))
             elif isinstance(go, str) and go != END:
-                # END is a special case, it's not actually a node in a practical sense
-                # but rather a special terminal node that we don't need to branch to
+                # END 是特殊情况，实际并非普通节点，
+                # 而是不需要建立分支路由的终止标记。
                 rtn.append((_CHANNEL_BRANCH_TO.format(go), None))
     return rtn
 
@@ -1854,7 +1722,7 @@ def _get_channel(
 def _get_channel(
     name: str, annotation: Any, *, allow_managed: bool = True
 ) -> BaseChannel | ManagedValueSpec:
-    # Strip out Required and NotRequired wrappers
+    # 剥离 Required 和 NotRequired 包装。
     if hasattr(annotation, "__origin__") and annotation.__origin__ in (
         Required,
         NotRequired,
@@ -1880,13 +1748,13 @@ def _get_channel(
 def _is_field_channel(typ: type[Any]) -> BaseChannel | None:
     if hasattr(typ, "__metadata__"):
         meta = typ.__metadata__
-        # Search through all annotated medata to find channel annotations
+        # 遍历全部 Annotated 元数据，寻找通道注解。
         for item in meta:
             if isinstance(item, BaseChannel):
                 if isinstance(item, DeltaChannel) and hasattr(typ, "__origin__"):
                     origin = typ.__origin__
-                    # Unwrap parameterized Required[X]/NotRequired[X] to X
-                    # (e.g. Annotated[NotRequired[dict[...]], ...]).
+                    # 将参数化的 Required[X]/NotRequired[X] 解包为 X，
+                    # 例如 Annotated[NotRequired[dict[...]], ...]。
                     if hasattr(origin, "__origin__") and origin.__origin__ in (
                         Required,
                         NotRequired,
@@ -1899,8 +1767,8 @@ def _is_field_channel(typ: type[Any]) -> BaseChannel | None:
                     )
                 return item
             elif isclass(item) and issubclass(item, BaseChannel):
-                # ex, Annotated[int, EphemeralValue, SomeOtherAnnotation]
-                # would return EphemeralValue(int)
+                # 例如 Annotated[int, EphemeralValue, SomeOtherAnnotation]
+                # 会返回 EphemeralValue(int)。
                 return item(typ.__origin__ if hasattr(typ, "__origin__") else typ)
     return None
 
@@ -1934,7 +1802,7 @@ def _is_field_managed_value(name: str, typ: type[Any]) -> ManagedValueSpec | Non
             if is_managed_value(decoration):
                 return decoration
 
-    # Handle Required, NotRequired, etc wrapped types by extracting the inner type
+    # 对 Required、NotRequired 等包装类型提取其内部类型。
     if (
         get_origin(typ) is not None
         and (args := get_args(typ))
